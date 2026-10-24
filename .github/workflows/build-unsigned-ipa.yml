@@ -1,0 +1,121 @@
+# 在你的 GitHub 仓库中保存为 .github/workflows/build-unsigned-ipa.yml。
+# 这是构建配置，目前尚未在云端运行，不代表已生成 IPA。
+# 固定使用本次审查过的 Nikon_connect 源码；只在手动点击时构建。
+name: Nikon Connect 未签名 IPA
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: 编译 iPhone 真机应用并打包
+    runs-on: macos-15
+    timeout-minutes: 40
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: 获取 Nikon_connect 源码
+        uses: actions/checkout@v4
+        with:
+          repository: yyhhzzzzz/Nikon_connect
+          ref: 13d6cb1715cc54d48dc1e3a462ef277f4052efaf
+          path: source
+          persist-credentials: false
+
+      - name: 记录源码和 Xcode 版本
+        run: |
+          set -euo pipefail
+          mkdir -p "$GITHUB_WORKSPACE/result"
+          {
+            echo '源码: https://github.com/yyhhzzzzz/Nikon_connect'
+            git -C source rev-parse HEAD
+            xcodebuild -version
+            xcode-select -p
+          } | tee "$GITHUB_WORKSPACE/result/build-info.txt"
+
+      - name: 安装 XcodeGen 工程生成工具
+        env:
+          HOMEBREW_NO_AUTO_UPDATE: '1'
+        run: |
+          set -euo pipefail
+          if ! command -v xcodegen >/dev/null 2>&1; then
+            brew install xcodegen
+          fi
+          xcodegen --version | tee -a "$GITHUB_WORKSPACE/result/build-info.txt"
+
+      - name: 生成 Xcode 工程
+        working-directory: source
+        run: |
+          set -euo pipefail
+          xcodegen generate 2>&1 | tee "$GITHUB_WORKSPACE/result/generate.log"
+
+      - name: 使用 iOS 真机 SDK 编译并关闭签名
+        working-directory: source
+        run: |
+          set -euo pipefail
+          xcodebuild \
+            -project NikonConnectIOS.xcodeproj \
+            -scheme NikonConnectIOS \
+            -configuration Release \
+            -sdk iphoneos \
+            -destination 'generic/platform=iOS' \
+            -derivedDataPath "$RUNNER_TEMP/NikonConnectDerivedData" \
+            ARCHS=arm64 \
+            ONLY_ACTIVE_ARCH=NO \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY= \
+            DEVELOPMENT_TEAM= \
+            build 2>&1 | tee "$GITHUB_WORKSPACE/result/build.log"
+
+      - name: 检查真机架构和未签名状态并打包 IPA
+        run: |
+          set -euo pipefail
+          app="$RUNNER_TEMP/NikonConnectDerivedData/Build/Products/Release-iphoneos/Nikon Connect.app"
+          test -d "$app"
+          executable=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$app/Info.plist")
+          test -f "$app/$executable"
+          /usr/bin/lipo -verify_arch arm64 "$app/$executable"
+          xcrun vtool -show-build "$app/$executable" >> "$GITHUB_WORKSPACE/result/build-info.txt"
+          if /usr/bin/codesign --display "$app" >/dev/null 2>&1; then
+            echo '发现主应用包含签名，停止输出。'
+            exit 1
+          fi
+          find "$app" -type d -name '*.appex' -print0 | while IFS= read -r -d '' extension; do
+            if /usr/bin/codesign --display "$extension" >/dev/null 2>&1; then
+              echo "发现扩展包含签名，停止输出: $extension"
+              exit 1
+            fi
+          done
+          mkdir -p "$RUNNER_TEMP/NikonConnectIPA/Payload"
+          /usr/bin/ditto "$app" "$RUNNER_TEMP/NikonConnectIPA/Payload/Nikon Connect.app"
+          cd "$RUNNER_TEMP/NikonConnectIPA"
+          /usr/bin/ditto -c -k --keepParent Payload "$GITHUB_WORKSPACE/result/NikonConnect-unsigned.ipa"
+          cd "$GITHUB_WORKSPACE/result"
+          /usr/bin/shasum -a 256 NikonConnect-unsigned.ipa > SHA256SUMS.txt
+
+      - name: 提供 IPA 下载
+        uses: actions/upload-artifact@v4
+        with:
+          name: NikonConnect-unsigned-IPA
+          path: |
+            result/NikonConnect-unsigned.ipa
+            result/SHA256SUMS.txt
+            result/build-info.txt
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: 保存构建日志供排错
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: NikonConnect-build-logs
+          path: |
+            result/*.log
+            result/build-info.txt
+          if-no-files-found: warn
+          retention-days: 7
