@@ -99,7 +99,7 @@ jobs:
           test -d "$app"
           executable=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$app/Info.plist")
           test -f "$app/$executable"
-          /usr/bin/lipo -verify_arch arm64 "$app/$executable"
+          /usr/bin/lipo "$app/$executable" -verify_arch arm64
           xcrun vtool -show-build "$app/$executable" >> "$GITHUB_WORKSPACE/result/build-info.txt"
           if /usr/bin/codesign --display "$app" >/dev/null 2>&1; then
             echo '发现主应用包含签名，停止输出。'
