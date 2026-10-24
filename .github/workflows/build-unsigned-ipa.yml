@@ -1,5 +1,5 @@
 # 在你的 GitHub 仓库中保存为 .github/workflows/build-unsigned-ipa.yml。
-# 这是构建配置，目前尚未在云端运行，不代表已生成 IPA。
+# 构建时应用下方记录的 Swift 6 类型约束补丁。
 # 固定使用本次审查过的 Nikon_connect 源码；只在手动点击时构建。
 name: Nikon Connect 未签名 IPA
 
@@ -46,6 +46,26 @@ jobs:
             brew install xcodegen
           fi
           xcodegen --version | tee -a "$GITHUB_WORKSPACE/result/build-info.txt"
+
+      - name: 应用 Swift 6 编译修复并记录补丁
+        working-directory: source
+        run: |
+          set -euo pipefail
+          git apply <<'PATCH'
+          diff --git a/Services/PTPIPSession+Lifecycle.swift b/Services/PTPIPSession+Lifecycle.swift
+          --- a/Services/PTPIPSession+Lifecycle.swift
+          +++ b/Services/PTPIPSession+Lifecycle.swift
+          @@ -454,7 +454,7 @@ extension PTPIPSession {
+                   )
+               }
+           
+          -    func withExclusiveCommandChannelAccess<T>(
+          +    func withExclusiveCommandChannelAccess<T: Sendable>(
+                   _ operation: () async throws -> T
+               ) async throws -> T {
+                   await acquireCommandChannelAccess()
+          PATCH
+          git diff -- Services/PTPIPSession+Lifecycle.swift > "$GITHUB_WORKSPACE/result/source-build-fix.patch"
 
       - name: 生成 Xcode 工程
         working-directory: source
@@ -106,6 +126,7 @@ jobs:
             result/NikonConnect-unsigned.ipa
             result/SHA256SUMS.txt
             result/build-info.txt
+            result/source-build-fix.patch
           if-no-files-found: error
           retention-days: 7
 
