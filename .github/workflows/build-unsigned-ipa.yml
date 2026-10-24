@@ -1,5 +1,5 @@
 # 在你的 GitHub 仓库中保存为 .github/workflows/build-unsigned-ipa.yml。
-# 构建时应用下方记录的 Swift 6 类型约束补丁。
+# 构建时应用下方记录的 Swift 6 类型约束与资源配置补丁。
 # 固定使用本次审查过的 Nikon_connect 源码；只在手动点击时构建。
 name: Nikon Connect 未签名 IPA
 
@@ -47,7 +47,7 @@ jobs:
           fi
           xcodegen --version | tee -a "$GITHUB_WORKSPACE/result/build-info.txt"
 
-      - name: 应用 Swift 6 编译修复并记录补丁
+      - name: 应用编译和资源配置修复并记录补丁
         working-directory: source
         run: |
           set -euo pipefail
@@ -64,8 +64,19 @@ jobs:
                    _ operation: () async throws -> T
                ) async throws -> T {
                    await acquireCommandChannelAccess()
+          diff --git a/project.yml b/project.yml
+          --- a/project.yml
+          +++ b/project.yml
+          @@ -27,7 +27,6 @@ targets:
+                 - path: Features
+                 - path: Services
+                 - path: Infrastructure
+          -    resources:
+                 - path: Resources/Assets.xcassets
+               dependencies:
+                 - target: DownloadActivityWidgetExtension
           PATCH
-          git diff -- Services/PTPIPSession+Lifecycle.swift > "$GITHUB_WORKSPACE/result/source-build-fix.patch"
+          git diff -- Services/PTPIPSession+Lifecycle.swift project.yml > "$GITHUB_WORKSPACE/result/source-build-fix.patch"
 
       - name: 生成 Xcode 工程
         working-directory: source
@@ -97,6 +108,7 @@ jobs:
           set -euo pipefail
           app="$RUNNER_TEMP/NikonConnectDerivedData/Build/Products/Release-iphoneos/Nikon Connect.app"
           test -d "$app"
+          test -f "$app/Assets.car"
           executable=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$app/Info.plist")
           test -f "$app/$executable"
           /usr/bin/lipo "$app/$executable" -verify_arch arm64
