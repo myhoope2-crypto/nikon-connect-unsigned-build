@@ -3674,10 +3674,10 @@ index 0000000..77472e8
 +}
 diff --git a/Features/ConnectionSetup/NearbyCamerasView.swift b/Features/ConnectionSetup/NearbyCamerasView.swift
 new file mode 100644
-index 0000000..e4db823
+index 0000000..57c2e04
 --- /dev/null
 +++ b/Features/ConnectionSetup/NearbyCamerasView.swift
-@@ -0,0 +1,66 @@
+@@ -0,0 +1,67 @@
 +import SwiftUI
 +
 +struct NearbyCamerasView: View {
@@ -3709,7 +3709,8 @@ index 0000000..e4db823
 +                    Button("停止连接所选相机",role:.destructive,action:onStop).buttonStyle(.bordered)
 +                    if (discovery.nearby + discovery.saved).first(where:{ $0.id == selecting })?.brand == .nikon {
 +                        Text(discovery.nikonStatus).font(.caption).foregroundColor(AppTheme.inkMuted)
-+                    } else if !nativeBluetooth.status.isEmpty {
++                    } else if let item = (discovery.nearby + discovery.saved).first(where:{ $0.id == selecting }),
++                              item.usesBluetooth, [.canon,.ricoh,.pentax,.panasonic].contains(item.brand), !nativeBluetooth.status.isEmpty {
 +                        Text(nativeBluetooth.status).font(.caption).foregroundColor(AppTheme.inkMuted)
 +                    }
 +                }
