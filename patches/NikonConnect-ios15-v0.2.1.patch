@@ -498,10 +498,10 @@ index 0000000..f801c87
 +}
 diff --git a/AppearanceUITests/AppearanceUITests.swift b/AppearanceUITests/AppearanceUITests.swift
 new file mode 100644
-index 0000000..bda146e
+index 0000000..81c7718
 --- /dev/null
 +++ b/AppearanceUITests/AppearanceUITests.swift
-@@ -0,0 +1,134 @@
+@@ -0,0 +1,143 @@
 +import XCTest
 +
 +@MainActor
@@ -522,6 +522,11 @@ index 0000000..bda146e
 +        attachment.name = name; attachment.lifetime = .keepAlways; add(attachment)
 +    }
 +    private func tab(_ name: String) { app.tabBars.buttons[name].tap() }
++    private func tapFixedControl(_ element: XCUIElement) {
++        XCTAssertTrue(element.waitForExistence(timeout: 10))
++        // 固定导航按钮不应被 XCTest 自动滚动到屏幕中央。
++        element.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap()
++    }
 +    private func scrollUp() {
 +        // 从内容中部向上拖动，避免触碰固定在底部的下载操作栏。
 +        let content = app.scrollViews.firstMatch
@@ -589,8 +594,11 @@ index 0000000..bda146e
 +        app.staticTexts["photo.filename.2"].tap()
 +        XCTAssertTrue(app.buttons["关闭预览"].waitForExistence(timeout: 10))
 +        shot("12-暗黑全屏预览")
-+        app.buttons["关闭预览"].tap()
-+        app.buttons["photos.options"].tap()
++        tapFixedControl(app.buttons["关闭预览"])
++        let dismissed = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: app.buttons["关闭预览"])
++        XCTAssertEqual(XCTWaiter.wait(for: [dismissed], timeout: 10), .completed)
++        tapFixedControl(app.buttons["photos.options"])
++        XCTAssertTrue(app.buttons["清空选择"].waitForExistence(timeout: 10))
 +        shot("13-暗黑全选范围菜单")
 +        app.buttons["清空选择"].tap()
 +        tab("下载"); shot("14-暗黑下载总览")
@@ -611,7 +619,8 @@ index 0000000..bda146e
 +        show(app.buttons["live.parameter.filmSimulation"]); shot("32-暗黑富士胶片模拟与色温")
 +        app.buttons["live.parameter.filmSimulation"].tap(); shot("33-暗黑胶片模拟选项菜单")
 +        app.buttons["CLASSIC CHROME / 经典正片"].tap()
-+        app.buttons["退出取景"].tap()
++        tapFixedControl(app.buttons["退出取景"])
++        Thread.sleep(forTimeInterval: 0.6)
 +        XCTAssertTrue(app.buttons["进入实时取景"].waitForExistence(timeout: 10))
 +        app.buttons["遥控快门"].tap()
 +        XCTAssertTrue(app.alerts.firstMatch.waitForExistence(timeout: 10))
@@ -624,7 +633,7 @@ index 0000000..bda146e
 +        launch(connected: false); setMode("暗黑"); tab("相机"); shot("25-暗黑连接表单")
 +        app.buttons["connection.mode"].tap(); shot("26-暗黑相机品牌菜单")
 +        app.buttons["富士 XApp 协议（实验）"].tap()
-+        app.buttons["富士蓝牙配对 / 启动 Wi-Fi"].tap()
++        tapFixedControl(app.buttons["富士蓝牙配对 / 启动 Wi-Fi"])
 +        XCTAssertTrue(app.buttons["搜索附近的富士相机"].waitForExistence(timeout: 10))
 +        shot("27-暗黑富士配对弹层"); app.buttons["完成"].tap()
 +        show(app.buttons["连接相机"]); app.buttons["连接相机"].tap()
