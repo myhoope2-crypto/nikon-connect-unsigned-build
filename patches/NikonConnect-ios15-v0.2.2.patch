@@ -717,7 +717,7 @@ index 0000000..97cfe3b
 +}
 diff --git a/Domain/CameraExtendedParameterLabels.swift b/Domain/CameraExtendedParameterLabels.swift
 new file mode 100644
-index 0000000..2bc86ea
+index 0000000..21933fb
 --- /dev/null
 +++ b/Domain/CameraExtendedParameterLabels.swift
 @@ -0,0 +1,103 @@
@@ -799,7 +799,7 @@ index 0000000..2bc86ea
 +            case 0xd149: return [0: "12 位", 1: "14 位"][value] ?? unknown
 +            case 0xd032: return [0: "sRGB · 标准色彩空间", 1: "Adobe RGB · 广色域"][value] ?? unknown
 +            case 0xd01f: return value >= 0 && value <= 5 ? "d-\(value + 1) · 机身预设" : unknown
-+            case 0xd054, 0xd0c0: return [0: "关闭", 1: "开启"][value] ?? unknown
++            case 0xd054, 0xd16a, 0xd0c0: return [0: "关闭", 1: "开启"][value] ?? unknown
 +            case 0xd0c1:
 +                return [0: "1/3 档", 1: "1/2 档", 2: "2/3 档", 3: "1 档", 4: "2 档", 5: "3 档"][value] ?? unknown
 +            case 0xd0c2:
@@ -983,10 +983,10 @@ index 0000000..d877ced
 +}
 diff --git a/Domain/CameraRemoteControl.swift b/Domain/CameraRemoteControl.swift
 new file mode 100644
-index 0000000..93fbc26
+index 0000000..5d66692
 --- /dev/null
 +++ b/Domain/CameraRemoteControl.swift
-@@ -0,0 +1,218 @@
+@@ -0,0 +1,225 @@
 +import Foundation
 +
 +struct CameraParameterChoice: Identifiable, Equatable, Sendable {
@@ -1015,10 +1015,22 @@ index 0000000..93fbc26
 +        return nil
 +    }
 +    var canChange: Bool { restriction == nil }
++    func confirms(_ requested: CameraParameterChoice) -> Bool {
++        if current.data == requested.data { return true }
++        // 富士颗粒“关闭”写 1 后，机身可能回读 6/7 以保留上次颗粒大小。
++        if profile == .fuji, id == 0xd023 {
++            func scalar(_ data: Data) -> UInt32 {
++                data.prefix(4).enumerated().reduce(0) { $0 | UInt32($1.element) << ($1.offset * 8) }
++            }
++            return scalar(requested.data) == 1 && [6, 7].contains(scalar(current.data))
++        }
++        return false
++    }
 +    var availabilityTitle: String {
 +        if canChange { return "可修改" }
 +        if unavailableReason != nil { return "协议未支持" }
 +        if !writable { return "只读" }
++        if choices.count > 1 && editableChoices.count < 2 { return "编码待确认" }
 +        return "暂不可改"
 +    }
 +
@@ -1156,19 +1168,14 @@ index 0000000..93fbc26
 +            choices: choices, writable: writable, profile: profile)
 +    }
 +
-+    // 同一功能只显示一个属性。尼康优先使用分子/分母快门及当前取景对焦属性。
++    // 同一功能只保留一个属性，优先使用目录前列的可写参数；只读厂商项不遮住可写标准项。
 +    static func preferred(_ parameters: [CameraParameter], profile: Profile) -> [CameraParameter] {
 +        var result = parameters
-+        if profile == .nikon, let vendor = parameters.first(where: { $0.id == 0xd100 }),
-+           vendor.canChange || !parameters.contains(where: { $0.id == 0x500d && $0.canChange }) {
-+            result.removeAll { $0.id == 0x500d }
-+        } else if profile == .nikon, parameters.contains(where: { $0.id == 0x500d }) {
-+            result.removeAll { $0.id == 0xd100 }
-+        }
-+        if profile == .nikon {
-+            for (vendor, standard) in [(UInt16(0xd061), UInt16(0x500a)), (UInt16(0xd05d), UInt16(0x501c))] {
-+                if result.contains(where: { $0.id == vendor && $0.unavailableReason == nil }) { result.removeAll { $0.id == standard } }
-+            }
++        for definition in CameraSettingCatalog.definitions(profile: profile) where definition.codes.count > 1 {
++            let candidates = definition.codes.compactMap { code in parameters.first { $0.id == code } }
++            guard candidates.count > 1 else { continue }
++            let chosen = candidates.first(where: \.canChange) ?? candidates.first(where: { $0.unavailableReason == nil }) ?? candidates[0]
++            result.removeAll { definition.codes.contains($0.id) && $0.id != chosen.id }
 +        }
 +        return result.sorted { $0.kind.rawValue < $1.kind.rawValue }
 +    }
@@ -1183,7 +1190,7 @@ index 0000000..93fbc26
 +    }
 +}
 +
-+struct CameraFocusPoint: Sendable {
++struct CameraFocusPoint: Equatable, Sendable {
 +    let x: Double
 +    let y: Double
 +}
@@ -1261,7 +1268,7 @@ index 417987f..918b9d5 100644
  }
 diff --git a/Domain/CameraSettingCatalog.swift b/Domain/CameraSettingCatalog.swift
 new file mode 100644
-index 0000000..376d89f
+index 0000000..49197fd
 --- /dev/null
 +++ b/Domain/CameraSettingCatalog.swift
 @@ -0,0 +1,173 @@
@@ -1422,7 +1429,7 @@ index 0000000..376d89f
 +        .init(kind: .wbFlashTune, title: "闪光灯白平衡微调", group: .whiteBalance, codes: [0xd01b], help: ""),
 +        .init(kind: .pictureControl, title: "优化校准", group: .nikon, codes: [0xd200], help: ""),
 +        .init(kind: .activeDLighting, title: "动态 D-Lighting（明暗优化）", group: .nikon, codes: [0xd14e], help: ""),
-+        .init(kind: .autoISO, title: "自动 ISO", group: .nikon, codes: [0xd054], help: ""),
++        .init(kind: .autoISO, title: "自动 ISO", group: .nikon, codes: [0xd16a, 0xd054], help: ""),
 +        .init(kind: .autoISOMax, title: "自动 ISO 最高感光度", group: .nikon, codes: [0xd183], help: "不同机型使用的感光度索引可能不同；无法确认刻度时仅显示原始值。"),
 +        .init(kind: .autoISOMinShutter, title: "自动 ISO 最低快门", group: .nikon, codes: [0xd164], help: "自动 ISO 开启且当前模式允许时生效。"),
 +        .init(kind: .stabilization, title: "减震 / 防抖", group: .nikon, codes: [0xd138], help: "镜头防抖开关可能控制此项。"),
@@ -1633,7 +1640,7 @@ index 10f1bca..02a218f 100644
  
 diff --git a/Features/ConnectionSetup/CameraLiveSettingsView.swift b/Features/ConnectionSetup/CameraLiveSettingsView.swift
 new file mode 100644
-index 0000000..3cc709e
+index 0000000..3b13eda
 --- /dev/null
 +++ b/Features/ConnectionSetup/CameraLiveSettingsView.swift
 @@ -0,0 +1,234 @@
@@ -1777,7 +1784,7 @@ index 0000000..3cc709e
 +                    .lineLimit(compact ? 2 : 3).frame(maxWidth: .infinity, alignment: .leading)
 +                HStack(spacing: 5) {
 +                    Image(systemName: parameter?.canChange == true ? "slider.horizontal.3" : "info.circle")
-+                    Text(parameter?.availabilityTitle ?? (definition.limitation == nil ? "未开放" : "协议未支持"))
++                    Text(parameter?.availabilityTitle ?? (definition.limitation == nil ? (model.parametersLoaded ? "未开放" : "尚未读取") : "协议未支持"))
 +                }.font(.caption2).foregroundColor(parameter?.canChange == true ? AppTheme.success : AppTheme.inkMuted)
 +            }
 +            .padding(10).frame(maxWidth: .infinity, minHeight: compact ? 94 : 82, alignment: .leading)
@@ -1976,7 +1983,7 @@ index 0000000..d51ea49
 +}
 diff --git a/Features/ConnectionSetup/CameraRemoteViewModel.swift b/Features/ConnectionSetup/CameraRemoteViewModel.swift
 new file mode 100644
-index 0000000..794a736
+index 0000000..cdee318
 --- /dev/null
 +++ b/Features/ConnectionSetup/CameraRemoteViewModel.swift
 @@ -0,0 +1,357 @@
@@ -2182,7 +2189,7 @@ index 0000000..794a736
 +                    let result = try await remote.cameraParameters(only: [parameter])
 +                    guard connection.activeSession?.id == sessionID else { return }
 +                    acceptParameters(result, replacing: [parameter])
-+                    if let actual = result.first(where: { $0.id == parameter }), actual.current.data == choice.data {
++                    if let actual = result.first(where: { $0.id == parameter }), actual.confirms(choice) {
 +                        needsFullParameterRefresh = true
 +                        parameterStatus = "相机已确认：\(actual.title) · \(actual.current.title)"
 +                        return
@@ -5495,10 +5502,10 @@ index 0000000..2aa6ff1
 +}
 diff --git a/Services/FujiBluetoothController.swift b/Services/FujiBluetoothController.swift
 new file mode 100644
-index 0000000..16014e4
+index 0000000..227facc
 --- /dev/null
 +++ b/Services/FujiBluetoothController.swift
-@@ -0,0 +1,244 @@
+@@ -0,0 +1,247 @@
 +// 配对及 Wi-Fi 交接流程参考 libfuji / furble（MIT），由 CoreBluetooth 实现。
 +@preconcurrency import CoreBluetooth
 +import Foundation
@@ -5653,11 +5660,14 @@ index 0000000..16014e4
 +    func autofocus() async throws {
 +        guard isReady else { throw CameraAppError.notConnected }
 +        do {
-+            // libfuji 的半按专用指令 03 00；释放时始终发送 00 00，不触发拍照。
++            // 每个蓝牙动作先发 01 00 命令前缀，再发半按或释放参数；不触发拍照。
++            try await write(Self.shutter, Data([1, 0]))
 +            try await write(Self.shutter, Data([3, 0]))
 +            try await Task.sleep(nanoseconds: 500_000_000)
++            try await write(Self.shutter, Data([1, 0]))
 +            try await write(Self.shutter, Data([0, 0]))
 +        } catch {
++            try? await write(Self.shutter, Data([1, 0]))
 +            try? await write(Self.shutter, Data([0, 0]))
 +            throw error
 +        }
