@@ -2116,10 +2116,10 @@ index 0000000..c628c48
 +}
 diff --git a/Features/ConnectionSetup/CameraRemoteView.swift b/Features/ConnectionSetup/CameraRemoteView.swift
 new file mode 100644
-index 0000000..ac33892
+index 0000000..cb101f9
 --- /dev/null
 +++ b/Features/ConnectionSetup/CameraRemoteView.swift
-@@ -0,0 +1,97 @@
+@@ -0,0 +1,110 @@
 +import SwiftUI
 +import UIKit
 +
@@ -2185,7 +2185,9 @@ index 0000000..ac33892
 +}
 +
 +struct FujiBluetoothPairingView: View {
++    var mode: CameraTransportMode = .experimentalFuji
 +    var onConnect: () -> Void = {}
++    @State private var preparing = false
 +    @ObservedObject var controller = FujiBluetoothController.shared
 +    @Environment(\.dismiss) private var dismiss
 +    var body: some View {
@@ -2200,8 +2202,19 @@ index 0000000..ac33892
 +                }
 +                if controller.isReady {
 +                    Section(header: Text("切换到相机 Wi-Fi")) {
-+                        Button("自动加入 Wi-Fi 并连接相机") { onConnect() }
-+                        Button("仅读取相机网络信息") { Task { await controller.prepareWiFi() } }
++                        Button("自动加入 Wi-Fi 并连接相机") {
++                            preparing = true
++                            Task {
++                                defer { preparing = false }
++                                do {
++                                    try await controller.readWiFiCredentials()
++                                    try CameraWiFiCoordinator.shared.save(name:controller.ssid,ssid:controller.ssid,password:controller.wifiPassword,
++                                        open:controller.wifiPassword.isEmpty,mode:mode,bluetoothID:controller.connectedIdentifier)
++                                    CameraWiFiCoordinator.shared.enabled = true; onConnect()
++                                } catch { controller.status = error.localizedDescription }
++                            }
++                        }.disabled(preparing)
++                        Button("仅读取相机网络信息") { Task { await controller.prepareWiFi() } }.disabled(preparing)
 +                        if !controller.ssid.isEmpty {
 +                            Text("网络：\(controller.ssid)")
 +                            Button("复制 Wi-Fi 密码") { UIPasteboard.general.string = controller.wifiPassword }
@@ -2952,7 +2965,7 @@ index 0000000..976cf5d
 +    }
 +}
 diff --git a/Features/ConnectionSetup/ConnectionContainerView.swift b/Features/ConnectionSetup/ConnectionContainerView.swift
-index 62629af..4d97db0 100644
+index 62629af..1dd9503 100644
 --- a/Features/ConnectionSetup/ConnectionContainerView.swift
 +++ b/Features/ConnectionSetup/ConnectionContainerView.swift
 @@ -5,8 +5,42 @@ struct ConnectionContainerView: View {
@@ -3018,7 +3031,7 @@ index 62629af..4d97db0 100644
 +                Text(connectionViewModel.lastSummary).font(.footnote).foregroundColor(AppTheme.inkMuted)
 +            }.padding(20)
 +        }.background(AppTheme.canvas.ignoresSafeArea()).navigationTitle("相机连接").navigationBarTitleDisplayMode(.inline)
-+            .sheet(isPresented: $showFujiPairing) { FujiBluetoothPairingView(onConnect: {
++            .sheet(isPresented: $showFujiPairing) { FujiBluetoothPairingView(mode:connectionViewModel.transportMode, onConnect: {
 +                showFujiPairing = false; connectAndRead()
 +            }) }
 +            .sheet(isPresented: $showWiFiSetup) {
@@ -5662,10 +5675,10 @@ index eef42ce..4ff7b64 100644
  extension CameraTransportFactory: CameraTransportFactoryProtocol {}
 diff --git a/Services/CameraWiFiCoordinator.swift b/Services/CameraWiFiCoordinator.swift
 new file mode 100644
-index 0000000..0d32a57
+index 0000000..a904fb4
 --- /dev/null
 +++ b/Services/CameraWiFiCoordinator.swift
-@@ -0,0 +1,140 @@
+@@ -0,0 +1,144 @@
 +import Foundation
 +@preconcurrency import NetworkExtension
 +import Security
@@ -5744,13 +5757,17 @@ index 0000000..0d32a57
 +        let fuji = mode == .experimentalFuji || mode == .experimentalFujiLegacy
 +        if fuji {
 +            let controller = FujiBluetoothController.shared
-+            if !controller.isReady, let id = profile(for: mode)?.bluetoothID {
++            let target = profile(for:mode)
++            if let id = target?.bluetoothID, controller.connectedIdentifier != id {
 +                status = "正在恢复已配对的富士蓝牙…"
 +                try await controller.restoreConnection(id)
 +            }
 +            if controller.isReady {
 +                status = "正在通过蓝牙启动相机 Wi-Fi…"
 +                try await controller.readWiFiCredentials()
++                if let target, target.ssid != controller.ssid {
++                    throw message("已选择的 Wi-Fi 与当前蓝牙相机不对应。请在网络列表选择对应相机，或重新配对后保存它的网络。")
++                }
 +                try save(name: controller.ssid, ssid: controller.ssid, password: controller.wifiPassword,
 +                         open: controller.wifiPassword.isEmpty, mode: mode, bluetoothID: controller.connectedIdentifier)
 +            }
