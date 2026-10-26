@@ -1479,7 +1479,7 @@ index 0000000..49197fd
 +    private static let pictureDetailLimitation = "此项使用复合优化校准数据。Z6 III 数据版本尚未确认，当前只支持切换优化校准，不修改其细项；请在机身调整。"
 +}
 diff --git a/Domain/CameraTransportMode.swift b/Domain/CameraTransportMode.swift
-index 643eaaa..16829a2 100644
+index 643eaaa..bf3355f 100644
 --- a/Domain/CameraTransportMode.swift
 +++ b/Domain/CameraTransportMode.swift
 @@ -1,22 +1,47 @@
@@ -1515,7 +1515,7 @@ index 643eaaa..16829a2 100644
 +        case .experimentalFuji: return "X-T30 III 等 XApp 协议机型：在上方搜索并选择相机，应用尝试蓝牙连接、获取网络并自动加入。"
 +        case .experimentalFujiLegacy: return "在相机中打开无线通信，加入相机 Wi-Fi。适用于传统 Camera Remote 协议。"
 +        case .experimentalRicoh: return "GR III／IIIx 等已公开的蓝牙接口可尝试启动热点；照片通过原生 /v1 无线接口传输。GR IV 等新协议未逐机确认。"
-+        case .experimentalPanasonic: return "使用原生 cam.cgi 与内容目录协议；支持部分 LUMIX Sync／Image App 机型。蓝牙热点启动为 S5 代协议实验实现，新认证机型可能不兼容。"
++        case .experimentalPanasonic: return "使用原生 cam.cgi 与内容目录协议；含 req_acc 和 req_acc_g/e 两种认证实验实现。蓝牙热点启动参考 S5 代，新机型接口可能不同。"
 +        case .experimentalOlympus: return "使用原生无线 HTTP 接口读取照片；先开启相机无线连接并加入网络。暂未实现 OM 蓝牙热点启动。"
 +        }
      }
@@ -5845,10 +5845,10 @@ index b0e0ec8..b90f89d 100644
          return await cameraThumbnailData(
 diff --git a/Services/CameraHTTPClient.swift b/Services/CameraHTTPClient.swift
 new file mode 100644
-index 0000000..78463d5
+index 0000000..2cbd344
 --- /dev/null
 +++ b/Services/CameraHTTPClient.swift
-@@ -0,0 +1,159 @@
+@@ -0,0 +1,160 @@
 +import Foundation
 +
 +enum CameraJSON: Codable, Sendable {
@@ -5883,13 +5883,14 @@ index 0000000..78463d5
 +final class CameraHTTPClient: @unchecked Sendable {
 +    let baseURL: URL
 +    private let session: URLSession
-+    init(host: String, port: Int) throws {
++    init(host: String, port: Int, headers:[String:String] = [:]) throws {
 +        var components = URLComponents(); components.scheme = "http"; components.host = host; components.port = port
 +        guard (1...65535).contains(port), let url = components.url else { throw CameraAppError.invalidPort }
 +        baseURL = url
 +        let config = URLSessionConfiguration.ephemeral
 +        config.waitsForConnectivity = false; config.timeoutIntervalForRequest = 15
 +        config.timeoutIntervalForResource = 1800; config.urlCache = nil
++        config.httpAdditionalHeaders = headers
 +        session = URLSession(configuration: config, delegate: CameraHTTPRedirectGuard(host: host, port: port), delegateQueue: nil)
 +    }
 +    func close() { session.invalidateAndCancel() }
@@ -7347,10 +7348,10 @@ index 0000000..2aa6ff1
 +}
 diff --git a/Services/ExperimentalWirelessHTTPTransport.swift b/Services/ExperimentalWirelessHTTPTransport.swift
 new file mode 100644
-index 0000000..b2c4233
+index 0000000..c8ae0d1
 --- /dev/null
 +++ b/Services/ExperimentalWirelessHTTPTransport.swift
-@@ -0,0 +1,261 @@
+@@ -0,0 +1,286 @@
 +import Foundation
 +
 +enum CameraClientIdentity {
@@ -7377,9 +7378,10 @@ index 0000000..b2c4233
 +    private var stores:[String] = []
 +    private var connected = false
 +    private var loading = false
++    private var lastModeSwitch:TimeInterval = 0
 +    init(kind:Kind) { self.kind = kind }
 +    func connect(using config:CameraConnectionConfig) async throws -> CameraSession {
-+        let http = try CameraHTTPClient(host:config.normalizedHost,port:config.port)
++        let http = try CameraHTTPClient(host:config.normalizedHost,port:config.port,headers:kind == .olympus ? ["User-Agent":"OI.Share v2"] : [:])
 +        client = http
 +        do {
 +            let name:String, identity:String
@@ -7390,7 +7392,7 @@ index 0000000..b2c4233
 +                      (props["manufacturer"].string ?? "").uppercased().contains("RICOH") || model.uppercased().contains("PENTAX") else {
 +                    throw failure("当前设备不是已识别的理光／宾得无线接口。")
 +                }
-+                name = model; identity = "ricoh|\(model)|\(props["serialNo"].string ?? props["macAddress"].string ?? config.normalizedHost)"
++                name = model; identity = "ricoh|\(model)|\(deviceIdentity([props["serialNo"].string,props["macAddress"].string]))"
 +                stores = props["storages"].array.compactMap { item in
 +                    guard let name = item["name"].string, ["in","sd1","sd2"].contains(name) else { return nil }; return name
 +                }
@@ -7399,20 +7401,29 @@ index 0000000..b2c4233
 +                let xml = try CameraXML.parse(await http.data("/get_caminfo.cgi",headers:["User-Agent":"OI.Share v2"]))
 +                guard let model = xml.first("model"), !model.isEmpty,
 +                      xml.first("version") != nil || xml.first("serial") != nil else { throw failure("相机未返回有效的奥林巴斯／OM 设备信息。") }
-+                name = model; identity = "olympus|\(model)|\(xml.first("serial") ?? config.normalizedHost)"
++                name = model; identity = "olympus|\(model)|\(deviceIdentity([xml.first("serial")]))"
 +            case .panasonic:
 +                let content = try CameraHTTPClient(host:config.normalizedHost,port:60606); contentClient = content
 +                let xml = try CameraXML.parse(await content.data("/Lumix/Server0/ddd"))
 +                guard (xml.first("manufacturer") ?? "").uppercased().contains("PANASONIC") else { throw failure("当前设备未提供松下原生内容目录。") }
 +                name = xml.first("friendlyName") ?? xml.first("modelNumber") ?? "LUMIX"
-+                identity = "panasonic|\(xml.first("UDN") ?? xml.first("serialNumber") ?? config.normalizedHost)"
++                identity = "panasonic|\(deviceIdentity([xml.first("UDN"),xml.first("serialNumber")]))"
++                var accessType = "req_acc", accessID = CameraClientIdentity.lumixID, accessName = "CameraConnect"
++                if (xml.first("X_CamCapability") ?? "").hasSuffix("1") {
++                    let challenge = try await http.data("/cam.cgi",query:query(["mode":"accctrl","type":"req_acc_g"]))
++                    let parts = String(decoding:challenge,as:UTF8.self).trimmingCharacters(in:.whitespacesAndNewlines).split(separator:",")
++                    guard parts.count == 2, parts[0] == "ok",let nonce = UInt32(parts[1],radix:16) else {
++                        throw failure("松下未返回已支持的连接认证挑战。")
++                    }
++                    accessType = "req_acc_e"; accessID = lumixAccessValue(accessID,nonce:nonce); accessName = lumixAccessValue(accessName,nonce:nonce)
++                }
 +                let deadline = ProcessInfo.processInfo.systemUptime + 45
 +                while true {
-+                    let data = try await http.data("/cam.cgi",query:query(["mode":"accctrl","type":"req_acc","value":CameraClientIdentity.lumixID,"value2":"CameraConnect"]))
++                    let data = try await http.data("/cam.cgi",query:query(["mode":"accctrl","type":accessType,"value":accessID,"value2":accessName]))
 +                    let value = String(decoding:data,as:UTF8.self).trimmingCharacters(in:.whitespacesAndNewlines)
 +                    if value.hasPrefix("ok,") || value == "ok" { break }
 +                    guard value.hasPrefix("ok_under_research"), ProcessInfo.processInfo.systemUptime < deadline else {
-+                        throw failure("松下未接受当前连接。请在机身确认；使用新加密认证的机型尚未接入。")
++                        throw failure("松下未接受当前连接。请在机身确认；此机型可能使用尚未接入的认证版本。")
 +                    }
 +                    try await Task.sleep(nanoseconds:1_000_000_000)
 +                }
@@ -7439,9 +7450,12 @@ index 0000000..b2c4233
 +                let state = try await lumix("getstate")
 +                if state.first("cammode") != "play" {
 +                    // 仅在用户请求浏览时切换一次；忙碌时退出，不反复重发模式切换。
-+                    guard state.first("rec") != "on", state.first("sd_access") != "on", state.first("interval_status") != "on" else {
++                    guard state.first("rec") != "on", state.first("sd_access") != "on",
++                          !["on","rec","pause"].contains(state.first("interval_status") ?? "") else {
 +                        throw failure("相机正在拍摄或写卡，暂不切换到照片浏览。")
 +                    }
++                    guard ProcessInfo.processInfo.systemUptime-lastModeSwitch > 10 else { throw failure("相机刚刚切换模式，请稍候再刷新。") }
++                    lastModeSwitch = ProcessInfo.processInfo.systemUptime
 +                    _ = try await lumix("camcmd",type:nil,value:"playmode")
 +                    try await Task.sleep(nanoseconds:1_000_000_000)
 +                }
@@ -7566,7 +7580,7 @@ index 0000000..b2c4233
 +    private func fileClient(_ value:String,session:CameraSession) throws -> (CameraHTTPClient,String) {
 +        guard let url = URL(string:value.trimmingCharacters(in:.whitespacesAndNewlines)),url.host == session.connectedHost,
 +              url.scheme == "http",let port = url.port,[80,50001,60606].contains(port),url.user == nil,url.password == nil else { throw failure("相机文件地址不属于当前设备。") }
-+        let client = try fileClients[port] ?? CameraHTTPClient(host:session.connectedHost,port:port); fileClients[port] = client
++        let client = try fileClients[port] ?? CameraHTTPClient(host:session.connectedHost,port:port,headers:["User-Agent":"Panasonic MIL DLNA CP UPnP/1.0"]); fileClients[port] = client
 +        return (client,url.absoluteString)
 +    }
 +    func downloadTransferMode(for asset:PhotoAsset) async -> DownloadThroughputTransferMode { .httpStream }
@@ -7602,6 +7616,18 @@ index 0000000..b2c4233
 +    func newlyCapturedAssets(in session:CameraSession) async throws -> [PhotoAsset] { throw failure("此通道尚未接入边拍边传。") }
 +    private func query(_ values:[String:String]) -> String {
 +        var components = URLComponents(); components.queryItems = values.sorted { $0.key < $1.key }.map { URLQueryItem(name:$0.key,value:$0.value) }; return components.percentEncodedQuery ?? ""
++    }
++    private func deviceIdentity(_ values:[String?]) -> String {
++        values.compactMap { $0?.trimmingCharacters(in:.whitespacesAndNewlines) }.first(where:{ !$0.isEmpty }) ?? "session-"+UUID().uuidString
++    }
++    // 部分 LUMIX 新机使用 nonce 混淆的 req_acc_g/e；不能据 Wi-Fi 链路一致推定认证一致。
++    private func lumixAccessValue(_ value:String,nonce:UInt32) -> String {
++        var bytes = Array(value.utf8); while bytes.count % 4 != 0 { bytes.append(0xff) }
++        let key = nonce == 0 ? UInt32(0x9032782c) : nonce
++        return stride(from:0,to:bytes.count,by:4).map { offset in
++            let value = bytes[offset..<offset+4].reduce(UInt32(0)) { ($0 << 8)|UInt32($1) } ^ key
++            return String(format:"%08x",value.byteSwapped)
++        }.joined()
 +    }
 +    private func validComponent(_ value:String) -> Bool { !value.isEmpty && value != "." && value != ".." && !value.contains("/") && !value.contains("\\") && !value.contains("?") && !value.contains("#") }
 +    private func fatDate(_ date:Int,_ time:Int) -> Date {
