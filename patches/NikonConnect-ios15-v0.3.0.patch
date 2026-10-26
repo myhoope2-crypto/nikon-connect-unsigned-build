@@ -5825,7 +5825,7 @@ index 0000000..a904fb4
 +}
 diff --git a/Services/CaptureRecoveryCheckpoint.swift b/Services/CaptureRecoveryCheckpoint.swift
 new file mode 100644
-index 0000000..bf3b432
+index 0000000..4abac46
 --- /dev/null
 +++ b/Services/CaptureRecoveryCheckpoint.swift
 @@ -0,0 +1,19 @@
@@ -5844,7 +5844,7 @@ index 0000000..bf3b432
 +        return try JSONDecoder().decode(Self.self,from:Data(contentsOf:url))
 +    }
 +    func save() throws {
-+        try FileManager.default.createDirectory(at:url.deletingLastPathComponent(),withIntermediateDirectories:true)
++        try FileManager.default.createDirectory(at:Self.url.deletingLastPathComponent(),withIntermediateDirectories:true)
 +        try JSONEncoder().encode(self).write(to:Self.url,options:.atomic)
 +    }
 +}
