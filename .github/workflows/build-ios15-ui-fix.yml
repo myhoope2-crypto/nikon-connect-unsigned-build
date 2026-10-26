@@ -1,0 +1,147 @@
+# Nikon_connect iOS 15.4 / 15.4.1 兼容构建，手动触发。
+# 配套补丁位于构建仓库 patches/NikonConnect-ios15-ui-fix.patch。
+name: Nikon Connect iOS 15 文字显示修复
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: 编译 iOS 15.4 兼容真机包
+    runs-on: macos-15
+    timeout-minutes: 40
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: 获取构建配置和兼容补丁
+        uses: actions/checkout@v4
+        with:
+          path: build-config
+          persist-credentials: false
+
+      - name: 获取固定版本的原始源码
+        uses: actions/checkout@v4
+        with:
+          repository: yyhhzzzzz/Nikon_connect
+          ref: 13d6cb1715cc54d48dc1e3a462ef277f4052efaf
+          path: source
+          persist-credentials: false
+
+      - name: 选择开发工具并记录构建信息
+        run: |
+          set -euo pipefail
+          sudo xcode-select -s /Applications/Xcode_16.4.app/Contents/Developer
+          mkdir -p "$GITHUB_WORKSPACE/result"
+          {
+            echo '源码: https://github.com/yyhhzzzzz/Nikon_connect'
+            git -C source rev-parse HEAD
+            echo "构建配置提交: $GITHUB_SHA"
+            echo '兼容目标: iOS 15.4，适用于 iOS 15.4.1'
+            echo '版本: 0.1.2，构建号: 3，不含实时活动扩展'
+            xcodebuild -version
+            xcode-select -p
+          } | tee "$GITHUB_WORKSPACE/result/build-info-ios15-v0.1.2.txt"
+
+      - name: 应用 iOS 15 兼容补丁
+        run: |
+          set -euo pipefail
+          git -C source apply "$GITHUB_WORKSPACE/build-config/patches/NikonConnect-ios15-ui-fix.patch"
+          git -C source diff > "$GITHUB_WORKSPACE/result/source-ios15-ui-fix.patch"
+
+      - name: 安装工程生成工具
+        env:
+          HOMEBREW_NO_AUTO_UPDATE: '1'
+        run: |
+          set -euo pipefail
+          if ! command -v xcodegen >/dev/null 2>&1; then
+            brew install xcodegen
+          fi
+          xcodegen --version | tee -a "$GITHUB_WORKSPACE/result/build-info-ios15-v0.1.2.txt"
+
+      - name: 生成兼容版本工程
+        working-directory: source
+        run: |
+          set -euo pipefail
+          xcodegen generate 2>&1 | tee "$GITHUB_WORKSPACE/result/ios15-v0.1.2-generate.log"
+
+      - name: 编译 iOS 15 真机应用并关闭签名
+        working-directory: source
+        run: |
+          set -euo pipefail
+          xcodebuild \
+            -project NikonConnectIOS.xcodeproj \
+            -scheme NikonConnectIOS \
+            -configuration Release \
+            -sdk iphoneos \
+            -destination 'generic/platform=iOS' \
+            -derivedDataPath "$RUNNER_TEMP/NikonConnectIOS15DerivedData" \
+            ARCHS=arm64 \
+            ONLY_ACTIVE_ARCH=NO \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY= \
+            DEVELOPMENT_TEAM= \
+            build 2>&1 | tee "$GITHUB_WORKSPACE/result/ios15-v0.1.2-build.log"
+
+      - name: 检查兼容信息并打包 IPA
+        run: |
+          set -euo pipefail
+          app="$RUNNER_TEMP/NikonConnectIOS15DerivedData/Build/Products/Release-iphoneos/Nikon Connect.app"
+          test -d "$app"
+          test -f "$app/Assets.car"
+          executable=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$app/Info.plist")
+          minimum_os=$(/usr/libexec/PlistBuddy -c 'Print :MinimumOSVersion' "$app/Info.plist")
+          test "$minimum_os" = '15.4'
+          test "$(/usr/libexec/PlistBuddy -c 'Print :UIUserInterfaceStyle' "$app/Info.plist")" = 'Light'
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$app/Info.plist")" = '0.1.2'
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$app/Info.plist")" = '3'
+          /usr/bin/lipo "$app/$executable" -verify_arch arm64
+          xcrun vtool -show-build "$app/$executable" >> "$GITHUB_WORKSPACE/result/build-info-ios15-v0.1.2.txt"
+          xcrun otool -L "$app/$executable" > "$GITHUB_WORKSPACE/result/ios15-v0.1.2-linked-libraries.txt"
+          if /usr/bin/grep -q 'ActivityKit.framework' "$GITHUB_WORKSPACE/result/ios15-v0.1.2-linked-libraries.txt"; then
+            echo '兼容包仍链接实时活动框架，停止打包。'
+            exit 1
+          fi
+          if find "$app" -type d -name '*.appex' -print -quit | /usr/bin/grep -q .; then
+            echo '兼容包仍包含应用扩展，停止打包。'
+            exit 1
+          fi
+          if /usr/bin/codesign --display "$app" >/dev/null 2>&1; then
+            echo '主应用包含签名，停止打包。'
+            exit 1
+          fi
+          mkdir -p "$RUNNER_TEMP/NikonConnectIOS15IPA/Payload"
+          /usr/bin/ditto "$app" "$RUNNER_TEMP/NikonConnectIOS15IPA/Payload/Nikon Connect.app"
+          cd "$RUNNER_TEMP/NikonConnectIOS15IPA"
+          /usr/bin/ditto -c -k --keepParent Payload "$GITHUB_WORKSPACE/result/NikonConnect-iOS15.4-v0.1.2-unsigned.ipa"
+          cd "$GITHUB_WORKSPACE/result"
+          /usr/bin/shasum -a 256 NikonConnect-iOS15.4-v0.1.2-unsigned.ipa > SHA256SUMS-ios15-v0.1.2.txt
+
+      - name: 提供兼容版本下载
+        uses: actions/upload-artifact@v4
+        with:
+          name: NikonConnect-iOS15-v0.1.2-unsigned-IPA
+          path: |
+            result/NikonConnect-iOS15.4-v0.1.2-unsigned.ipa
+            result/SHA256SUMS-ios15-v0.1.2.txt
+            result/build-info-ios15-v0.1.2.txt
+            result/source-ios15-ui-fix.patch
+            result/ios15-v0.1.2-linked-libraries.txt
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: 保存兼容构建日志
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: NikonConnect-iOS15-v0.1.2-build-logs
+          path: |
+            result/*.log
+            result/build-info-ios15-v0.1.2.txt
+            result/ios15-v0.1.2-linked-libraries.txt
+          if-no-files-found: warn
+          retention-days: 7
