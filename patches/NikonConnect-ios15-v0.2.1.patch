@@ -2080,7 +2080,7 @@ index fc065af..f880df3 100644
  
          photoAssets = PhotoAssetMerge.preservingCameraOrder(
 diff --git a/Features/PhotoBrowser/PhotoBrowserView.swift b/Features/PhotoBrowser/PhotoBrowserView.swift
-index bbb0c2b..f7ef743 100644
+index bbb0c2b..f9fcbac 100644
 --- a/Features/PhotoBrowser/PhotoBrowserView.swift
 +++ b/Features/PhotoBrowser/PhotoBrowserView.swift
 @@ -12,6 +12,21 @@ private typealias PlatformImage = NSImage
@@ -2150,7 +2150,7 @@ index bbb0c2b..f7ef743 100644
 +
 +    private var selectionTools: some View {
 +        VStack(alignment: .leading, spacing: 10) {
-+            TextField("搜索文件名", text: $filenameQuery)
++            TextField("搜索文件名", text: $filenameQuery, prompt: Text("搜索文件名").foregroundColor(AppTheme.inkMuted))
 +                .textFieldStyle(.roundedBorder)
 +            Toggle("只看星标", isOn: $starredOnly)
 +            Toggle("只看未下载", isOn: $undownloadedOnly)
