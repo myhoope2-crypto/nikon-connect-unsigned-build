@@ -125,10 +125,10 @@ index 11f0022..63b38c4 100644
          #endif
 diff --git a/Domain/AssetLibraryIdentity.swift b/Domain/AssetLibraryIdentity.swift
 new file mode 100644
-index 0000000..09d277f
+index 0000000..8ddce62
 --- /dev/null
 +++ b/Domain/AssetLibraryIdentity.swift
-@@ -0,0 +1,30 @@
+@@ -0,0 +1,54 @@
 +import Foundation
 +import CryptoKit
 +
@@ -157,6 +157,30 @@ index 0000000..09d277f
 +              abs(captureDate.timeIntervalSince(other.captureDate)) <= 2 else { return false }
 +        return (fileName as NSString).deletingPathExtension.caseInsensitiveCompare(
 +            (other.fileName as NSString).deletingPathExtension) == .orderedSame
++    }
++}
++
++extension PhotoAsset {
++    var companionGroup: String? {
++        guard let sourceScope, let directoryIdentifier else { return nil }
++        let fields = [sourceScope, directoryIdentifier, (fileName as NSString).deletingPathExtension.lowercased()]
++        return (try? JSONEncoder().encode(fields)).flatMap { String(data: $0, encoding: .utf8) }
++    }
++}
++enum AssetCompanionIndex {
++    static func groups(_ assets: [PhotoAsset]) -> [String: [PhotoAsset]] {
++        var groups: [String: [PhotoAsset]] = [:]
++        for asset in assets where asset.kind == .jpeg || asset.kind == .raw {
++            if let key = asset.companionGroup { groups[key, default: []].append(asset) }
++        }
++        return groups
++    }
++    static func pairedIDs(_ assets: [PhotoAsset]) -> Set<UUID> {
++        var ids = Set<UUID>()
++        for group in groups(assets).values {
++            for asset in group where group.contains(where: { asset.isRAWCompanion(of: $0) }) { ids.insert(asset.id) }
++        }
++        return ids
 +    }
 +}
 diff --git a/Domain/CameraConnectionChecking.swift b/Domain/CameraConnectionChecking.swift
@@ -545,7 +569,7 @@ index 10f1bca..02a218f 100644
  
 diff --git a/Features/ConnectionSetup/CameraRemoteView.swift b/Features/ConnectionSetup/CameraRemoteView.swift
 new file mode 100644
-index 0000000..fc66196
+index 0000000..e714aca
 --- /dev/null
 +++ b/Features/ConnectionSetup/CameraRemoteView.swift
 @@ -0,0 +1,98 @@
@@ -636,7 +660,7 @@ index 0000000..fc66196
 +                            Text("网络：\(controller.ssid)")
 +                            Button("复制 Wi-Fi 密码") { UIPasteboard.general.string = controller.wifiPassword }
 +                                .disabled(controller.wifiPassword.isEmpty)
-+                            Text("到 iPhone 设置 → Wi-Fi 加入相机网络。返回本应用，关闭此页面后点击连接相机。蓝牙连接保留供遥控快门使用。")
++                            Text("确认蓝牙和 Wi-Fi 对应同一台相机。到 iPhone 设置 → Wi-Fi 加入相机网络。返回本应用，关闭此页面后点击连接相机。蓝牙连接保留供遥控快门使用。")
 +                                .font(.footnote)
 +                        }
 +                    }
@@ -649,7 +673,7 @@ index 0000000..fc66196
 +}
 diff --git a/Features/ConnectionSetup/CameraRemoteViewModel.swift b/Features/ConnectionSetup/CameraRemoteViewModel.swift
 new file mode 100644
-index 0000000..798f6cd
+index 0000000..e2bb867
 --- /dev/null
 +++ b/Features/ConnectionSetup/CameraRemoteViewModel.swift
 @@ -0,0 +1,217 @@
@@ -863,7 +887,7 @@ index 0000000..798f6cd
 +                }
 +                status = "已重连。边拍边传需重新开启；断线期间照片可在照片页筛选未下载项。"
 +                await gallery.refreshPhotos()
-+                await downloads.startQueueIfPossible()
++                if downloads.canAutomaticallyRecoverQueue { await downloads.startQueueIfPossible() }
 +                return
 +            }
 +        }
@@ -1252,7 +1276,7 @@ index f3c3fdb..0a05836 100644
          lastSummary = shell.handle(error)
      }
 diff --git a/Features/Downloads/DownloadManagerViewModel.swift b/Features/Downloads/DownloadManagerViewModel.swift
-index ed0c071..9b9c70d 100644
+index ed0c071..8339a69 100644
 --- a/Features/Downloads/DownloadManagerViewModel.swift
 +++ b/Features/Downloads/DownloadManagerViewModel.swift
 @@ -32,6 +32,8 @@ final class DownloadManagerViewModel: ObservableObject {
@@ -1305,7 +1329,22 @@ index ed0c071..9b9c70d 100644
          guard queueState.jobs.contains(where: { $0.status.canResume }) else {
              queueState.status = .idle
              queueState.activeJobID = nil
-@@ -373,7 +395,7 @@ final class DownloadManagerViewModel: ObservableObject {
+@@ -195,11 +217,14 @@ final class DownloadManagerViewModel: ObservableObject {
+             return
+         }
+ 
++        guard queueState.status == .running, sessionCoordinator.hasActiveSession else { return }
+         queueRunnerTask = Task { [weak self] in
+             await self?.runQueue()
+         }
+     }
+ 
++    var canAutomaticallyRecoverQueue: Bool { queueState.status == .interrupted }
++
+     func pauseQueue() {
+         if let queueRunnerTask {
+             queueStopReason = .pause
+@@ -373,7 +398,7 @@ final class DownloadManagerViewModel: ObservableObject {
                  updateJob(job.id) { queuedJob in
                      queuedJob.status = .interrupted
                      queuedJob.updatedAt = Date()
@@ -1314,7 +1353,7 @@ index ed0c071..9b9c70d 100644
                  }
                  queueState.activeJobID = nil
                  queueState.status = .interrupted
-@@ -386,10 +408,19 @@ final class DownloadManagerViewModel: ObservableObject {
+@@ -386,10 +411,19 @@ final class DownloadManagerViewModel: ObservableObject {
                  return
              }
  
@@ -1334,7 +1373,7 @@ index ed0c071..9b9c70d 100644
                  queuedJob.startedAt = queuedJob.startedAt ?? Date()
                  queuedJob.updatedAt = Date()
                  queuedJob.errorMessage = nil
-@@ -445,7 +476,10 @@ final class DownloadManagerViewModel: ObservableObject {
+@@ -445,7 +479,10 @@ final class DownloadManagerViewModel: ObservableObject {
                  currentTemporaryURL = temporaryURL
  
                  let measuredSize = Self.fileSize(at: temporaryURL)
@@ -1346,7 +1385,18 @@ index ed0c071..9b9c70d 100644
                  finalizeProgress(forJobID: job.id, finalSize: finalSize)
  
                  var record = try await downloadStore.storeDownloadedFile(at: temporaryURL, from: job.asset)
-@@ -579,7 +613,7 @@ final class DownloadManagerViewModel: ObservableObject {
+@@ -501,6 +538,10 @@ final class DownloadManagerViewModel: ObservableObject {
+                 }
+             } catch {
+                 cleanupTemporaryDownloadFile()
++                if Task.isCancelled {
++                    _ = await handleCancellation(forJobID: job.id)
++                    return
++                }
+                 let mappedStatus = interruptibleStatus(for: error)
+                 let message = shell.userFacingMessage(for: error)
+                 updateJob(job.id) { queuedJob in
+@@ -579,7 +620,7 @@ final class DownloadManagerViewModel: ObservableObject {
          }
      }
  
@@ -1355,7 +1405,7 @@ index ed0c071..9b9c70d 100644
          guard let activeJobID = queueState.activeJobID else { return }
          queueStopReason = .interrupted(reason)
          updateJob(activeJobID) { job in
-@@ -593,7 +627,9 @@ final class DownloadManagerViewModel: ObservableObject {
+@@ -593,7 +634,9 @@ final class DownloadManagerViewModel: ObservableObject {
      }
  
      private func applyProgress(_ transportProgress: DownloadTransferProgress, toJobID jobID: UUID) {
@@ -1400,10 +1450,10 @@ index fe1056b..930452c 100644
              onSelectAllAssets: {
                  galleryViewModel.selectAllAssets()
 diff --git a/Features/PhotoBrowser/GalleryViewModel.swift b/Features/PhotoBrowser/GalleryViewModel.swift
-index fc065af..88de1ad 100644
+index fc065af..f880df3 100644
 --- a/Features/PhotoBrowser/GalleryViewModel.swift
 +++ b/Features/PhotoBrowser/GalleryViewModel.swift
-@@ -7,6 +7,60 @@ final class GalleryViewModel: ObservableObject {
+@@ -7,6 +7,65 @@ final class GalleryViewModel: ObservableObject {
      @Published var hasMorePhotos = false
      @Published var selectedAssetIDs: Set<UUID> = []
      @Published var isLoading = false
@@ -1428,7 +1478,12 @@ index fc065af..88de1ad 100644
 +    func selectAssets(_ assets: [PhotoAsset], linkPairs: Bool) {
 +        var selection = assets
 +        if linkPairs {
-+            selection += photoAssets.filter { candidate in assets.contains { $0.isRAWCompanion(of: candidate) } }
++            let groups = AssetCompanionIndex.groups(photoAssets)
++            for asset in assets {
++                if let key = asset.companionGroup {
++                    selection += (groups[key] ?? []).filter { asset.isRAWCompanion(of: $0) }
++                }
++            }
 +        }
 +        selectedAssetIDs.formUnion(selection.map(\.id))
 +    }
@@ -1464,7 +1519,7 @@ index fc065af..88de1ad 100644
  
      private let thumbnailService: any AssetThumbnailServing
      private let sessionCoordinator: CameraSessionCoordinator
-@@ -41,6 +95,7 @@ final class GalleryViewModel: ObservableObject {
+@@ -41,6 +100,7 @@ final class GalleryViewModel: ObservableObject {
      }
  
      func refreshPhotos() async {
@@ -1472,7 +1527,7 @@ index fc065af..88de1ad 100644
          do {
              isLoading = true
              shell.setGlobalActivityTitle(CameraWorkflowState.loadingPhotos.title)
-@@ -54,6 +109,7 @@ final class GalleryViewModel: ObservableObject {
+@@ -54,6 +114,7 @@ final class GalleryViewModel: ObservableObject {
      }
  
      func loadMorePhotos() async {
@@ -1480,7 +1535,7 @@ index fc065af..88de1ad 100644
          do {
              isLoading = true
              shell.setGlobalActivityTitle(CameraWorkflowState.loadingPhotos.title)
-@@ -67,6 +123,7 @@ final class GalleryViewModel: ObservableObject {
+@@ -67,6 +128,7 @@ final class GalleryViewModel: ObservableObject {
      }
  
      func resetForDisconnectedSession() {
@@ -1488,7 +1543,7 @@ index fc065af..88de1ad 100644
          photoAssets = []
          hasMorePhotos = false
          selectedAssetIDs = []
-@@ -75,7 +132,13 @@ final class GalleryViewModel: ObservableObject {
+@@ -75,7 +137,13 @@ final class GalleryViewModel: ObservableObject {
          }
      }
  
@@ -1503,7 +1558,7 @@ index fc065af..88de1ad 100644
          if selectedAssetIDs.contains(asset.id) {
              selectedAssetIDs.remove(asset.id)
          } else {
-@@ -87,6 +150,10 @@ final class GalleryViewModel: ObservableObject {
+@@ -87,6 +155,10 @@ final class GalleryViewModel: ObservableObject {
          selectedAssetIDs = Set(photoAssets.map(\.id))
      }
  
@@ -1514,7 +1569,7 @@ index fc065af..88de1ad 100644
      func clearSelection() {
          selectedAssetIDs.removeAll()
      }
-@@ -139,6 +206,8 @@ final class GalleryViewModel: ObservableObject {
+@@ -139,6 +211,8 @@ final class GalleryViewModel: ObservableObject {
              resetTraversal: resetTraversal,
              limit: pageSize
          )
@@ -1524,7 +1579,7 @@ index fc065af..88de1ad 100644
  
          photoAssets = PhotoAssetMerge.preservingCameraOrder(
 diff --git a/Features/PhotoBrowser/PhotoBrowserView.swift b/Features/PhotoBrowser/PhotoBrowserView.swift
-index bbb0c2b..a8b56bf 100644
+index bbb0c2b..1bd5825 100644
 --- a/Features/PhotoBrowser/PhotoBrowserView.swift
 +++ b/Features/PhotoBrowser/PhotoBrowserView.swift
 @@ -12,6 +12,21 @@ private typealias PlatformImage = NSImage
@@ -1619,18 +1674,26 @@ index bbb0c2b..a8b56bf 100644
              }
          }
      }
-@@ -214,6 +274,10 @@ struct PhotoBrowserView: View {
+@@ -208,12 +268,17 @@ struct PhotoBrowserView: View {
+     }
+ 
+     private var assetGrid: some View {
+-        VStack(alignment: .leading, spacing: 14) {
++        let pairedIDs = AssetCompanionIndex.pairedIDs(assets)
++        return VStack(alignment: .leading, spacing: 14) {
+             CustomCard {
+                 LazyVGrid(columns: gridItems, spacing: 10) {
                      ForEach(filteredAssets) { asset in
                          PhotoAssetGridTile(
                              asset: asset,
 +                            isStarred: asset.libraryFingerprint.map(starredKeys.contains) == true,
 +                            isDownloaded: asset.libraryFingerprint.map(downloadedKeys.contains) == true,
-+                            hasPair: assets.contains { asset.isRAWCompanion(of: $0) },
++                            hasPair: pairedIDs.contains(asset.id),
 +                            onToggleStar: { onToggleStar(asset) },
                              isSelected: selectedAssetIDs.contains(asset.id),
                              loadThumbnail: loadThumbnail,
                              onToggleSelection: {
-@@ -490,6 +554,10 @@ private struct PhotoAssetGridTile: View {
+@@ -490,6 +555,10 @@ private struct PhotoAssetGridTile: View {
      private static let photoAspectRatio = 6016.0 / 4016.0
  
      let asset: PhotoAsset
@@ -1641,7 +1704,7 @@ index bbb0c2b..a8b56bf 100644
      let isSelected: Bool
      let loadThumbnail: (PhotoAsset) async -> Data?
      let onToggleSelection: () -> Void
-@@ -537,6 +605,15 @@ private struct PhotoAssetGridTile: View {
+@@ -537,6 +606,15 @@ private struct PhotoAssetGridTile: View {
                      )
              )
  
@@ -2472,18 +2535,20 @@ index 0000000..33e8bee
 +OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 +SOFTWARE.
 diff --git a/Services/AssetThumbnailService.swift b/Services/AssetThumbnailService.swift
-index b0e0ec8..20a447f 100644
+index b0e0ec8..b90f89d 100644
 --- a/Services/AssetThumbnailService.swift
 +++ b/Services/AssetThumbnailService.swift
-@@ -55,6 +55,7 @@ actor AssetThumbnailService {
+@@ -55,6 +55,9 @@ actor AssetThumbnailService {
      }
  
      private let cacheDirectory: URL
 +    private var generation = UUID()
++    private var activeRequests = 0
++    private var requestWaiters: [CheckedContinuation<Void, Never>] = []
      private var cachedThumbnailData: [String: Data] = [:]
      private var inFlightTasks: [String: Task<Data?, Never>] = [:]
      private var unavailableIdentifiers = Set<String>()
-@@ -75,6 +76,7 @@ actor AssetThumbnailService {
+@@ -75,6 +78,7 @@ actor AssetThumbnailService {
      }
  
      func clear() {
@@ -2491,15 +2556,21 @@ index b0e0ec8..20a447f 100644
          cachedThumbnailData.removeAll()
          inFlightTasks.removeAll()
          unavailableIdentifiers.removeAll()
-@@ -134,6 +136,7 @@ actor AssetThumbnailService {
+@@ -134,8 +138,12 @@ actor AssetThumbnailService {
              return await existingTask.value
          }
  
 +        let requestGeneration = generation
          let task = Task<Data?, Never> {
-             await Self.buildDerivativeData(
+-            await Self.buildDerivativeData(
++            await self.acquireRequest()
++            defer { self.releaseRequest() }
++            guard self.generation == requestGeneration else { return nil }
++            return await Self.buildDerivativeData(
                  for: asset,
-@@ -145,6 +148,7 @@ actor AssetThumbnailService {
+                 kind: kind,
+                 using: transport,
+@@ -145,6 +153,7 @@ actor AssetThumbnailService {
  
          storeTask(task, for: cacheKey, kind: kind)
          let result = await task.value
@@ -2507,7 +2578,23 @@ index b0e0ec8..20a447f 100644
          clearTask(for: cacheKey, kind: kind)
  
          if let result {
-@@ -169,8 +173,10 @@ actor AssetThumbnailService {
+@@ -157,6 +166,15 @@ actor AssetThumbnailService {
+         return result
+     }
+ 
++    private func acquireRequest() async {
++        if activeRequests < 2 { activeRequests += 1; return }
++        await withCheckedContinuation { requestWaiters.append($0) }
++    }
++    private func releaseRequest() {
++        if requestWaiters.isEmpty { activeRequests -= 1 }
++        else { requestWaiters.removeFirst().resume() }
++    }
++
+     private func cachedDataInMemory(for cacheKey: String, kind: DerivativeKind) -> Data? {
+         switch kind {
+         case .thumbnail:
+@@ -169,8 +187,10 @@ actor AssetThumbnailService {
      private func storeDataInMemory(_ data: Data, for cacheKey: String, kind: DerivativeKind) {
          switch kind {
          case .thumbnail:
@@ -2518,7 +2605,7 @@ index b0e0ec8..20a447f 100644
              cachedPreviewData[cacheKey] = data
          }
      }
-@@ -258,7 +264,9 @@ actor AssetThumbnailService {
+@@ -258,7 +278,9 @@ actor AssetThumbnailService {
      }
  
      private static func cacheKey(for asset: PhotoAsset) -> String {
@@ -2529,7 +2616,7 @@ index b0e0ec8..20a447f 100644
              asset.remoteIdentifier,
              asset.fileName,
              String(asset.byteSize),
-@@ -267,7 +275,8 @@ actor AssetThumbnailService {
+@@ -267,7 +289,8 @@ actor AssetThumbnailService {
              String(asset.thumbnailInfo?.byteSize ?? 0),
              String(asset.thumbnailInfo?.pixelWidth ?? 0),
              String(asset.thumbnailInfo?.pixelHeight ?? 0)
@@ -2539,7 +2626,7 @@ index b0e0ec8..20a447f 100644
          let digest = SHA256.hash(data: Data(rawKey.utf8))
          return digest.map { String(format: "%02x", $0) }.joined()
      }
-@@ -278,49 +287,17 @@ actor AssetThumbnailService {
+@@ -278,49 +301,17 @@ actor AssetThumbnailService {
          using transport: any CameraTransport,
          session: CameraSession
      ) async -> Data? {
@@ -3007,10 +3094,10 @@ index 0000000..edcaa41
 +}
 diff --git a/Services/ExperimentalFujiTransport.swift b/Services/ExperimentalFujiTransport.swift
 new file mode 100644
-index 0000000..ed26d47
+index 0000000..4726d63
 --- /dev/null
 +++ b/Services/ExperimentalFujiTransport.swift
-@@ -0,0 +1,288 @@
+@@ -0,0 +1,309 @@
 +// 富士无线协议参考 libfuji（MIT），网络、状态和 Swift 接口由本项目实现。
 +import Foundation
 +
@@ -3028,6 +3115,10 @@ index 0000000..ed26d47
 +    private var events: [UInt16: UInt32] = [:]
 +    private var handles: [UInt32] = []
 +    private var cursor = 0
++    private var pairedBluetoothID: String?
++    private var watchCount: Int?
++    private var watchEdgeKeys: [String] = []
++    private var watchPoll = 0
 +    private var watchEnabled = false
 +    private var watchBaseline: Set<String>?
 +    private var diagnostics: [String] = []
@@ -3080,6 +3171,7 @@ index 0000000..ed26d47
 +                    connectedHost: config.normalizedHost, port: config.port,
 +                    capabilities: [.connectionProbe, .listAssets, .downloadAssets, .liveView, .capture, .parameters, .watchCapture],
 +                    persistentIdentity: "fuji|\(identity)")
++                pairedBluetoothID = await FujiBluetoothController.shared.connectedIdentifier
 +                cameraSession = session; try Task.checkCancellation()
 +                diagnostics.append("富士 \(xapp ? "XApp" : "传统无线") 实验通道；拍摄功能以 X-T30 III 为适配目标，未经真机验证。")
 +                return session
@@ -3250,7 +3342,13 @@ index 0000000..ed26d47
 +            try? await set16(0xd226, xapp ? 2 : 0); try? await set16(0xd227, 1)
 +        }
 +    }
-+    func releaseShutter() async throws { try await FujiBluetoothController.shared.releaseShutter() }
++    func releaseShutter() async throws {
++        let current = await FujiBluetoothController.shared.connectedIdentifier
++        guard let pairedBluetoothID, current == pairedBluetoothID else {
++            throw CameraAppError.unsupportedOperation("请先配对当前富士相机的蓝牙，再建立 Wi-Fi 连接。")
++        }
++        try await FujiBluetoothController.shared.releaseShutter()
++    }
 +    func cameraParameters() async throws -> [CameraParameter] {
 +        let definitions = CameraParameterDecoder.definitions + [(0xd02a, "ISO 感光度（富士）")]
 +        var result: [CameraParameter] = []
@@ -3275,18 +3373,28 @@ index 0000000..ed26d47
 +        }
 +        _ = try await transaction(0x1016, parameters: [UInt32(parameter)], output: choice.data)
 +    }
-+    func beginCaptureWatch() async { watchEnabled = true; watchBaseline = nil }
++    func beginCaptureWatch() async { watchEnabled = true; watchBaseline = nil; watchCount = nil; watchEdgeKeys = []; watchPoll = 0 }
 +    func stopCaptureWatch() async { watchEnabled = false }
 +    func checkConnection() async throws { try await updateEvents() }
 +    func newlyCapturedAssets(in session: CameraSession) async throws -> [PhotoAsset] {
 +        guard liveTransaction == nil, !isTransferring else { return [] }
 +        let currentHandles = try await objectHandles()
++        watchPoll += 1
++        var edgeKeys: [String] = []
++        for handle in Set([currentHandles.first, currentHandles.last].compactMap { $0 }) {
++            guard watchEnabled else { return [] }
++            if let photo = try await asset(handle: handle, session: session), let key = photo.libraryFingerprint { edgeKeys.append(key) }
++        }
++        edgeKeys.sort()
++        // 无变化时只检查数量及首尾身份，每 20 轮仍做一次完整复核。
++        if watchBaseline != nil, watchCount == currentHandles.count, watchEdgeKeys == edgeKeys, watchPoll % 20 != 0 { return [] }
 +        // 索引可能重排，因此用完整文件身份比较，不把旧句柄当作新照片。
 +        var photos: [PhotoAsset] = []
 +        for handle in currentHandles {
 +            guard watchEnabled else { return [] }
 +            if let photo = try await asset(handle: handle, session: session) { photos.append(photo) }
 +        }
++        watchCount = currentHandles.count; watchEdgeKeys = edgeKeys
 +        let keys = Set(photos.compactMap(\.libraryFingerprint))
 +        guard let baseline = watchBaseline else { watchBaseline = keys; return [] }
 +        watchBaseline = keys.union(baseline)
@@ -3300,7 +3408,7 @@ index 0000000..ed26d47
 +    func consumeDiagnostics() async -> [String] { let result = diagnostics; diagnostics = []; return result }
 +}
 diff --git a/Services/ExperimentalNikonTransport.swift b/Services/ExperimentalNikonTransport.swift
-index 838a986..7d00072 100644
+index 838a986..dfe3cb8 100644
 --- a/Services/ExperimentalNikonTransport.swift
 +++ b/Services/ExperimentalNikonTransport.swift
 @@ -1,10 +1,11 @@
@@ -3342,7 +3450,8 @@ index 838a986..7d00072 100644
 +            if deviceInfo.operationsSupported.contains(0x9207) { capabilities.insert(.capture) }
 +            if deviceInfo.operationsSupported.contains(0x1014) { capabilities.insert(.parameters) }
              return CameraSession(
-                 cameraName: deviceInfo.model ?? "Nikon Z5",
+-                cameraName: deviceInfo.model ?? "Nikon Z5",
++                cameraName: deviceInfo.model ?? "尼康相机",
                  connectedHost: host,
                  port: config.port,
 -                capabilities: [.connectionProbe, .listAssets, .downloadAssets]
@@ -3603,10 +3712,10 @@ index 0000000..2aa6ff1
 +}
 diff --git a/Services/FujiBluetoothController.swift b/Services/FujiBluetoothController.swift
 new file mode 100644
-index 0000000..de9dd27
+index 0000000..fe2f976
 --- /dev/null
 +++ b/Services/FujiBluetoothController.swift
-@@ -0,0 +1,231 @@
+@@ -0,0 +1,232 @@
 +// 配对及 Wi-Fi 交接流程参考 libfuji / furble（MIT），由 CoreBluetooth 实现。
 +@preconcurrency import CoreBluetooth
 +import Foundation
@@ -3695,6 +3804,7 @@ index 0000000..de9dd27
 +        guard peripheral === peer else { return }; peripheral.discoverServices(nil)
 +    }
 +    func centralManager(_ central: CBCentralManager, didFailToConnect peripheral: CBPeripheral, error: Error?) {
++        guard peripheral === peer else { return }
 +        status = "蓝牙连接失败：\(error?.localizedDescription ?? "请重试")"; failPending(); isReady = false
 +    }
 +    func centralManager(_ central: CBCentralManager, didDisconnectPeripheral peripheral: CBPeripheral, error: Error?) {
