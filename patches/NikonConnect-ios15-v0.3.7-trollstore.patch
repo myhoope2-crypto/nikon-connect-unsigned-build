@@ -37,6 +37,21 @@ index 0000000..20db06c
 +        }
 +    }
 +}
+diff --git a/App/AppShellViewModel.swift b/App/AppShellViewModel.swift
+index 26b670a..780ac2b 100644
+--- a/App/AppShellViewModel.swift
++++ b/App/AppShellViewModel.swift
+@@ -19,8 +19,8 @@ final class AppShellViewModel: ObservableObject {
+         let entry = LogEntry(timestamp: Date(), message: message)
+         activityLog.insert(entry, at: 0)
+ 
+-        if activityLog.count > 30 {
+-            activityLog = Array(activityLog.prefix(30))
++        if activityLog.count > 200 {
++            activityLog = Array(activityLog.prefix(200))
+         }
+     }
+ 
 diff --git a/App/AppTheme.swift b/App/AppTheme.swift
 index 773d2d6..89f8f48 100644
 --- a/App/AppTheme.swift
@@ -5132,18 +5147,20 @@ index 0000000..6467365
 +    }
 +}
 diff --git a/Features/Settings/SettingsView.swift b/Features/Settings/SettingsView.swift
-index 4f187d4..6915ef3 100644
+index 4f187d4..530a127 100644
 --- a/Features/Settings/SettingsView.swift
 +++ b/Features/Settings/SettingsView.swift
-@@ -1,6 +1,7 @@
+@@ -1,6 +1,9 @@
  import SwiftUI
++import UIKit
  
  struct SettingsView: View {
 +    @AppStorage("appearanceMode") private var appearanceMode = AppAppearance.system.rawValue
++    @State private var logCopied = false
      let autoExportToPhotoLibrary: Bool
      let prioritizeJPEGDownloads: Bool
      let portInput: String
-@@ -12,8 +13,17 @@ struct SettingsView: View {
+@@ -12,8 +15,17 @@ struct SettingsView: View {
      var body: some View {
          ScrollView {
              LazyVStack(alignment: .leading, spacing: 24) {
@@ -5161,7 +5178,7 @@ index 4f187d4..6915ef3 100644
                  supportSection
              }
              .padding(.horizontal, 20)
-@@ -24,6 +34,22 @@ struct SettingsView: View {
+@@ -24,6 +36,22 @@ struct SettingsView: View {
          .navigationBarTitleDisplayMode(.inline)
      }
  
@@ -5184,7 +5201,7 @@ index 4f187d4..6915ef3 100644
      private var preferencesSection: some View {
          VStack(alignment: .leading, spacing: 12) {
              SectionHeader(title: "下载行为")
-@@ -31,27 +57,33 @@ struct SettingsView: View {
+@@ -31,27 +59,33 @@ struct SettingsView: View {
              CustomCard {
                  VStack(alignment: .leading, spacing: 14) {
                      Toggle(
@@ -5224,7 +5241,7 @@ index 4f187d4..6915ef3 100644
  
                          Text("选中混合格式时，会优先下载 JPEG / PNG，再继续下载 RAW 和视频，体感会更快。")
                              .font(.system(.caption, design: .rounded))
-@@ -85,7 +117,7 @@ struct SettingsView: View {
+@@ -85,7 +119,7 @@ struct SettingsView: View {
                  VStack(alignment: .leading, spacing: 14) {
                      DisclosureGroup("关于此版本") {
                          VStack(alignment: .leading, spacing: 10) {
@@ -5233,7 +5250,7 @@ index 4f187d4..6915ef3 100644
                                  .font(.system(.subheadline, design: .rounded).weight(.bold))
                                  .foregroundStyle(AppTheme.ink)
                          }
-@@ -94,6 +126,12 @@ struct SettingsView: View {
+@@ -94,11 +128,32 @@ struct SettingsView: View {
                      .font(.system(.subheadline, design: .rounded).weight(.semibold))
                      .tint(AppTheme.ink)
  
@@ -5246,7 +5263,27 @@ index 4f187d4..6915ef3 100644
                      if !activityLog.isEmpty {
                          Divider()
  
-@@ -114,7 +152,7 @@ struct SettingsView: View {
+                         DisclosureGroup("运行记录") {
+                             VStack(alignment: .leading, spacing: 12) {
++                                Button {
++                                    let formatter = ISO8601DateFormatter()
++                                    let lines = activityLog.reversed().map {
++                                        "\(formatter.string(from: $0.timestamp))  \($0.message)"
++                                    }
++                                    UIPasteboard.general.string = ([versionDescription] + lines).joined(separator: "\n")
++                                    logCopied = true
++                                } label: {
++                                    Label(logCopied ? "已复制，可粘贴发送" : "复制全部保留记录（\(activityLog.count) 条）",
++                                          systemImage: "doc.on.doc")
++                                }
++                                .buttonStyle(.plain)
++                                .foregroundColor(AppTheme.accentStrong)
++                                Text("最多保留本次运行最近 200 条；下方显示最近 12 条。复制内容包含版本号和时间。")
++                                    .font(.caption).foregroundColor(AppTheme.inkMuted)
+                                 ForEach(activityLog.prefix(12)) { entry in
+                                     HStack(alignment: .top, spacing: 8) {
+                                         Circle()
+@@ -114,7 +169,7 @@ struct SettingsView: View {
  
                                              Text(Formatters.logTime(entry.timestamp))
                                                  .font(.system(.caption2, design: .monospaced))
@@ -5255,7 +5292,7 @@ index 4f187d4..6915ef3 100644
                                          }
                                      }
                                  }
-@@ -129,12 +167,24 @@ struct SettingsView: View {
+@@ -129,12 +184,24 @@ struct SettingsView: View {
          }
      }
  
