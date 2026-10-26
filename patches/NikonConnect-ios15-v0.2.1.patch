@@ -498,10 +498,10 @@ index 0000000..f801c87
 +}
 diff --git a/AppearanceUITests/AppearanceUITests.swift b/AppearanceUITests/AppearanceUITests.swift
 new file mode 100644
-index 0000000..d965fba
+index 0000000..bda146e
 --- /dev/null
 +++ b/AppearanceUITests/AppearanceUITests.swift
-@@ -0,0 +1,122 @@
+@@ -0,0 +1,134 @@
 +import XCTest
 +
 +@MainActor
@@ -534,6 +534,18 @@ index 0000000..d965fba
 +            scrollUp()
 +        }
 +        XCTAssertTrue(element.exists && element.isHittable, "需要检查的控件未显示：\(element)")
++    }
++    private func showPhotoAboveDownloadBar(_ filename: XCUIElement) {
++        // SwiftUI 有时把固定下载栏后方的元素也报告为可点击，需检查实际屏幕位置。
++        let screen = app.frame
++        for _ in 0..<8 {
++            if filename.exists, filename.frame.midY > screen.height * 0.18,
++               filename.frame.midY < screen.height * 0.55 { break }
++            app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.48)).press(forDuration: 0.05,
++                thenDragTo: app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.20)))
++        }
++        XCTAssertTrue(filename.exists && filename.isHittable)
++        XCTAssertLessThan(filename.frame.midY, screen.height * 0.55)
 +    }
 +    private func setMode(_ mode: String) {
 +        tab("设置")
@@ -572,7 +584,7 @@ index 0000000..d965fba
 +        show(dateToggle)
 +        dateToggle.coordinate(withNormalizedOffset: CGVector(dx: 0.95, dy: 0.5)).tap()
 +        XCTAssertEqual(dateToggle.value as? String, "0")
-+        show(app.staticTexts["photo.filename.2"])
++        showPhotoAboveDownloadBar(app.staticTexts["photo.filename.2"])
 +        shot("11-暗黑照片网格格式星标与选中状态")
 +        app.staticTexts["photo.filename.2"].tap()
 +        XCTAssertTrue(app.buttons["关闭预览"].waitForExistence(timeout: 10))
@@ -2523,7 +2535,7 @@ index fc065af..f880df3 100644
  
          photoAssets = PhotoAssetMerge.preservingCameraOrder(
 diff --git a/Features/PhotoBrowser/PhotoBrowserView.swift b/Features/PhotoBrowser/PhotoBrowserView.swift
-index bbb0c2b..f9fcbac 100644
+index bbb0c2b..e916d0a 100644
 --- a/Features/PhotoBrowser/PhotoBrowserView.swift
 +++ b/Features/PhotoBrowser/PhotoBrowserView.swift
 @@ -12,6 +12,21 @@ private typealias PlatformImage = NSImage
@@ -2568,7 +2580,14 @@ index bbb0c2b..f9fcbac 100644
                  .disabled(assets.isEmpty)
              }
          }
-@@ -110,7 +131,46 @@ struct PhotoBrowserView: View {
+@@ -105,12 +126,53 @@ struct PhotoBrowserView: View {
+                         bottomActionBar
+                     }
+                 }
++                .padding(.top, 8)
++                .background(AppTheme.canvas)
+             }
+         }
      }
  
      private var filteredAssets: [PhotoAsset] {
@@ -2616,7 +2635,7 @@ index bbb0c2b..f9fcbac 100644
      }
  
      private var selectedAssetsCount: Int {
-@@ -176,6 +236,7 @@ struct PhotoBrowserView: View {
+@@ -176,6 +238,7 @@ struct PhotoBrowserView: View {
  
              if activeSession != nil || !assets.isEmpty {
                  filterBar
@@ -2624,7 +2643,7 @@ index bbb0c2b..f9fcbac 100644
              }
          }
      }
-@@ -198,7 +259,7 @@ struct PhotoBrowserView: View {
+@@ -198,7 +261,7 @@ struct PhotoBrowserView: View {
                      }
                      .padding(.horizontal, 14)
                      .padding(.vertical, 10)
@@ -2633,7 +2652,7 @@ index bbb0c2b..f9fcbac 100644
                      .background(isSelected ? AppTheme.ink : AppTheme.surfaceMuted, in: Capsule())
                  }
                  .buttonStyle(.plain)
-@@ -208,12 +269,17 @@ struct PhotoBrowserView: View {
+@@ -208,12 +271,17 @@ struct PhotoBrowserView: View {
      }
  
      private var assetGrid: some View {
@@ -2652,7 +2671,7 @@ index bbb0c2b..f9fcbac 100644
                              isSelected: selectedAssetIDs.contains(asset.id),
                              loadThumbnail: loadThumbnail,
                              onToggleSelection: {
-@@ -243,7 +309,7 @@ struct PhotoBrowserView: View {
+@@ -243,7 +311,7 @@ struct PhotoBrowserView: View {
              VStack(alignment: .center, spacing: 16) {
                  Image(systemName: "photo.on.rectangle.angled")
                      .font(.system(size: 36, weight: .semibold))
@@ -2661,7 +2680,7 @@ index bbb0c2b..f9fcbac 100644
                      .frame(width: 68, height: 68)
                      .background(AppTheme.surfaceMuted, in: Circle())
  
-@@ -273,7 +339,7 @@ struct PhotoBrowserView: View {
+@@ -273,7 +341,7 @@ struct PhotoBrowserView: View {
              VStack(alignment: .center, spacing: 16) {
                  Image(systemName: "line.3.horizontal.decrease.circle")
                      .font(.system(size: 36, weight: .semibold))
@@ -2670,7 +2689,7 @@ index bbb0c2b..f9fcbac 100644
                      .frame(width: 68, height: 68)
                      .background(AppTheme.surfaceMuted, in: Circle())
  
-@@ -310,7 +376,7 @@ struct PhotoBrowserView: View {
+@@ -310,7 +378,7 @@ struct PhotoBrowserView: View {
      }
  
      private var bottomActionBar: some View {
@@ -2679,7 +2698,7 @@ index bbb0c2b..f9fcbac 100644
              VStack(alignment: .leading, spacing: 3) {
                  Text(selectedAssetsCount > 0 ? "已选择 \(selectedAssetsCount) 项" : "队列中还有 \(queuedJobCount) 项")
                      .font(.system(.subheadline, design: .rounded).weight(.bold))
-@@ -322,15 +388,13 @@ struct PhotoBrowserView: View {
+@@ -322,15 +390,13 @@ struct PhotoBrowserView: View {
                      .lineLimit(1)
              }
  
@@ -2696,7 +2715,7 @@ index bbb0c2b..f9fcbac 100644
                                  .font(.system(.subheadline, design: .rounded).weight(.bold))
                          }
                          .foregroundStyle(AppTheme.ink)
-@@ -344,7 +408,7 @@ struct PhotoBrowserView: View {
+@@ -344,7 +410,7 @@ struct PhotoBrowserView: View {
                          HStack(spacing: 6) {
                              Image(systemName: "play.fill")
                                  .font(.system(size: 15, weight: .bold))
@@ -2705,7 +2724,7 @@ index bbb0c2b..f9fcbac 100644
                                  .font(.system(.subheadline, design: .rounded).weight(.bold))
                          }
                          .foregroundStyle(AppTheme.ink)
-@@ -360,10 +424,10 @@ struct PhotoBrowserView: View {
+@@ -360,10 +426,10 @@ struct PhotoBrowserView: View {
                          HStack(spacing: 6) {
                              Image(systemName: "arrow.down.circle.fill")
                                  .font(.system(size: 18))
@@ -2718,7 +2737,7 @@ index bbb0c2b..f9fcbac 100644
                          .padding(.horizontal, 20)
                          .padding(.vertical, 12)
                          .background(
-@@ -376,8 +440,9 @@ struct PhotoBrowserView: View {
+@@ -376,8 +442,9 @@ struct PhotoBrowserView: View {
                      .disabled(!canDownloadSelection)
                      .buttonStyle(.plain)
                  }
@@ -2729,7 +2748,7 @@ index bbb0c2b..f9fcbac 100644
          .padding(.horizontal, 18)
          .padding(.vertical, 14)
          .background(AppTheme.surface, in: RoundedRectangle(cornerRadius: 20, style: .continuous))
-@@ -490,6 +555,10 @@ private struct PhotoAssetGridTile: View {
+@@ -490,6 +557,10 @@ private struct PhotoAssetGridTile: View {
      private static let photoAspectRatio = 6016.0 / 4016.0
  
      let asset: PhotoAsset
@@ -2740,7 +2759,7 @@ index bbb0c2b..f9fcbac 100644
      let isSelected: Bool
      let loadThumbnail: (PhotoAsset) async -> Data?
      let onToggleSelection: () -> Void
-@@ -505,10 +574,10 @@ private struct PhotoAssetGridTile: View {
+@@ -505,10 +576,10 @@ private struct PhotoAssetGridTile: View {
                  HStack {
                      Text(asset.kind.badgeTitle)
                          .font(.system(size: 9, weight: .bold))
@@ -2753,7 +2772,7 @@ index bbb0c2b..f9fcbac 100644
                          .clipShape(Capsule())
  
                      Spacer(minLength: 6)
-@@ -521,10 +590,14 @@ private struct PhotoAssetGridTile: View {
+@@ -521,10 +592,14 @@ private struct PhotoAssetGridTile: View {
                  }) {
                      Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
                          .font(.system(size: 20, weight: .medium))
@@ -2770,7 +2789,7 @@ index bbb0c2b..f9fcbac 100644
                  .padding(6)
              }
              .background(AppTheme.controlBackground)
-@@ -537,7 +610,17 @@ private struct PhotoAssetGridTile: View {
+@@ -537,7 +612,17 @@ private struct PhotoAssetGridTile: View {
                      )
              )
  
@@ -2788,7 +2807,7 @@ index bbb0c2b..f9fcbac 100644
                  .font(.system(.footnote, design: .rounded).weight(.medium))
                  .foregroundStyle(AppTheme.ink)
                  .lineLimit(1)
-@@ -546,6 +629,14 @@ private struct PhotoAssetGridTile: View {
+@@ -546,6 +631,14 @@ private struct PhotoAssetGridTile: View {
          .contentShape(Rectangle())
      }
  
@@ -2803,7 +2822,7 @@ index bbb0c2b..f9fcbac 100644
      private var kindBadgeColor: Color {
          switch asset.kind {
          case .raw:
-@@ -644,7 +735,7 @@ private struct PhotoAssetPreviewScreen: View {
+@@ -644,7 +737,7 @@ private struct PhotoAssetPreviewScreen: View {
  
                  bottomBar
              }
@@ -2812,7 +2831,7 @@ index bbb0c2b..f9fcbac 100644
      }
  
      private var currentAsset: PhotoAsset {
-@@ -673,7 +764,7 @@ private struct PhotoAssetPreviewScreen: View {
+@@ -673,7 +766,7 @@ private struct PhotoAssetPreviewScreen: View {
                      .font(.system(.headline, design: .rounded).weight(.bold))
                      .foregroundStyle(.white)
                      .frame(width: 38, height: 38)
@@ -2821,7 +2840,7 @@ index bbb0c2b..f9fcbac 100644
                      .clipShape(Circle())
                      .overlay(
                          Circle().strokeBorder(Color.white.opacity(0.15), lineWidth: 1)
-@@ -681,6 +772,8 @@ private struct PhotoAssetPreviewScreen: View {
+@@ -681,6 +774,8 @@ private struct PhotoAssetPreviewScreen: View {
              }
              .buttonStyle(.plain)
  
@@ -2830,7 +2849,7 @@ index bbb0c2b..f9fcbac 100644
              VStack(alignment: .leading, spacing: 2) {
                  Text(currentAsset.fileName)
                      .font(.system(.subheadline, design: .rounded).weight(.bold))
-@@ -815,10 +908,10 @@ private struct PhotoAssetPreviewScreen: View {
+@@ -815,10 +910,10 @@ private struct PhotoAssetPreviewScreen: View {
                  .font(.title3.weight(.semibold))
                  .foregroundStyle(.white)
                  .frame(width: 42, height: 42)
