@@ -232,6 +232,35 @@ index 0000000..9a2cc05
 +    func newlyCapturedAssets(in session: CameraSession) async throws -> [PhotoAsset] { [] }
 +}
 +#endif
+diff --git a/App/CameraSessionCoordinator.swift b/App/CameraSessionCoordinator.swift
+index 54430ce..418cf2b 100644
+--- a/App/CameraSessionCoordinator.swift
++++ b/App/CameraSessionCoordinator.swift
+@@ -1,7 +1,16 @@
++import Foundation
++
+ @MainActor
+ final class CameraSessionCoordinator {
+     private(set) var activeSession: CameraSession?
+     private(set) var activeTransport: (any CameraTransport)?
++    private var cameraUse: (id: UUID, reason: String)?
++    var exclusiveUseReason: String? { cameraUse?.reason }
++    func acquireCameraUse(_ reason: String) -> UUID? {
++        guard cameraUse == nil else { return nil }
++        let id = UUID(); cameraUse = (id,reason); return id
++    }
++    func releaseCameraUse(_ id: UUID) { if cameraUse?.id == id { cameraUse = nil } }
+ 
+     var hasActiveSession: Bool {
+         activeSession != nil && activeTransport != nil
+@@ -16,6 +25,7 @@ final class CameraSessionCoordinator {
+         let transport = activeTransport
+         activeSession = nil
+         activeTransport = nil
++        cameraUse = nil
+         return transport
+     }
+ }
 diff --git a/App/NikonConnectApp.swift b/App/NikonConnectApp.swift
 index a305814..ef4880c 100644
 --- a/App/NikonConnectApp.swift
@@ -1644,10 +1673,10 @@ index 10f1bca..02a218f 100644
  
 diff --git a/Domain/WorkflowLibrary.swift b/Domain/WorkflowLibrary.swift
 new file mode 100644
-index 0000000..8400d09
+index 0000000..8158755
 --- /dev/null
 +++ b/Domain/WorkflowLibrary.swift
-@@ -0,0 +1,160 @@
+@@ -0,0 +1,166 @@
 +import Foundation
 +import SwiftUI
 +
@@ -1729,7 +1758,10 @@ index 0000000..8400d09
 +        try write(updated, name:"projects.json"); projects = updated; activeProjectID = item.id; return item.id
 +    }
 +    func updateProject(_ item: CaptureProject) throws {
-+        guard let i = projects.firstIndex(where: { $0.id == item.id }), !item.name.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty else { return }
++        guard !item.name.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty, item.name.count <= 100, item.note.count <= 10000 else {
++            throw failure("名称请输入 1–100 个字，备注不要超过 10000 字。")
++        }
++        guard let i = projects.firstIndex(where: { $0.id == item.id }) else { return }
 +        var updated = projects; updated[i] = item; try write(updated, name:"projects.json"); projects = updated
 +    }
 +    func removeProject(_ id: UUID) throws {
@@ -1760,7 +1792,10 @@ index 0000000..8400d09
 +        }
 +    }
 +    private func encoder() -> JSONEncoder { let e = JSONEncoder(); e.outputFormatting = [.prettyPrinted,.sortedKeys]; return e }
-+    private func write<T: Encodable>(_ value: T, name: String) throws { try encoder().encode(value).write(to:directory.appendingPathComponent(name), options:.atomic) }
++    private func write<T: Encodable>(_ value: T, name: String) throws {
++        guard errorMessage == nil else { throw failure("本地工作资料读取失败，已阻止覆盖原文件。请先备份应用资料。") }
++        try encoder().encode(value).write(to:directory.appendingPathComponent(name), options:.atomic)
++    }
 +    private func failure(_ text: String) -> CameraAppError { .unsupportedOperation(text) }
 +}
 +
@@ -2066,10 +2101,10 @@ index 0000000..c628c48
 +}
 diff --git a/Features/ConnectionSetup/CameraRemoteView.swift b/Features/ConnectionSetup/CameraRemoteView.swift
 new file mode 100644
-index 0000000..04f06ee
+index 0000000..ac33892
 --- /dev/null
 +++ b/Features/ConnectionSetup/CameraRemoteView.swift
-@@ -0,0 +1,93 @@
+@@ -0,0 +1,97 @@
 +import SwiftUI
 +import UIKit
 +
@@ -2117,6 +2152,10 @@ index 0000000..04f06ee
 +                        Button(model.isWatching ? "停止边拍边传" : "开始边拍边传") {
 +                            if model.isWatching { model.stopWatching() } else { model.startWatching() }
 +                        }.disabled(!model.isWatching && (!model.supports(.watchCapture) || model.isBusy || model.isLive || model.isScheduling))
++                        if !model.isWatching {
++                            Button("恢复上次监测并补传") { model.startWatching(resuming:true) }
++                                .disabled(!model.canPrepareWorkflow || model.isLive || !model.supports(.watchCapture))
++                        }
 +                    }
 +                }
 +            }.padding(20)
@@ -2165,10 +2204,10 @@ index 0000000..04f06ee
 +}
 diff --git a/Features/ConnectionSetup/CameraRemoteViewModel.swift b/Features/ConnectionSetup/CameraRemoteViewModel.swift
 new file mode 100644
-index 0000000..452e282
+index 0000000..5c83b75
 --- /dev/null
 +++ b/Features/ConnectionSetup/CameraRemoteViewModel.swift
-@@ -0,0 +1,520 @@
+@@ -0,0 +1,543 @@
 +import Foundation
 +import SwiftUI
 +import UIKit
@@ -2235,9 +2274,13 @@ index 0000000..452e282
 +        guard !downloads.isDownloading, !gallery.isLoading else {
 +            status = "请等待照片读取结束，并暂停下载后再开始取景。"; return
 +        }
++        guard let lease = connection.sessionCoordinator.acquireCameraUse("实时取景") else {
++            status = "相机正在执行其他操作，请稍后开始取景。"; return
++        }
 +        stopWatching(); isBusy = true; wantsLive = true; isStoppingLive = false
 +        liveTask = Task { [weak self] in
 +            guard let self else { return }
++            defer { self.connection.sessionCoordinator.releaseCameraUse(lease) }
 +            await self.watchTask?.value
 +            do {
 +                guard self.connection.activeSession?.id == sessionID, self.wantsLive else { throw CancellationError() }
@@ -2500,11 +2543,15 @@ index 0000000..452e282
 +        guard canPrepareWorkflow, !isLive, supports(.capture), let remote, let sessionID = connection.activeSession?.id,
 +              (0...86400).contains(delay), (1...86400).contains(interval), (1...9999).contains(count) else { return }
 +        let id = UUID(); scheduleID = id; isScheduling = true; scheduleCompleted = 0
++        guard let lease = connection.sessionCoordinator.acquireCameraUse("定时拍摄计划") else {
++            isScheduling = false; scheduleID = nil; scheduleStatus = "相机正在执行其他操作，计划未启动。"; return
++        }
 +        scheduleTask = Task {
 +            let previousIdle = UIApplication.shared.isIdleTimerDisabled
 +            UIApplication.shared.isIdleTimerDisabled = true
 +            defer {
 +                UIApplication.shared.isIdleTimerDisabled = previousIdle
++                connection.sessionCoordinator.releaseCameraUse(lease)
 +                isScheduling = false; scheduleTask = nil; scheduleID = nil
 +            }
 +            do {
@@ -2550,6 +2597,13 @@ index 0000000..452e282
 +        guard watchTask == nil, !isLive, liveTask == nil, !isBusy, !isScheduling, supports(.watchCapture),
 +              let remote, let session = connection.activeSession else { return }
 +        wantsWatch = true; isWatching = true; status = "建立存储卡基线中，已有照片不会自动下载。"
++        if resuming, watchKnownFingerprints == nil {
++            do {
++                if let checkpoint = try CaptureRecoveryCheckpoint.load(), checkpoint.identity == session.persistentIdentity {
++                    watchKnownFingerprints = checkpoint.fingerprints; watchBaselineIdentity = checkpoint.identity
++                }
++            } catch { shell.appendLog("上次补传基线无法读取，本次只建立新基线：\(error.localizedDescription)") }
++        }
 +        watchTask = Task { [weak self] in
 +            guard let self else { return }
 +            defer { self.isWatching = false; self.watchTask = nil }
@@ -2561,13 +2615,15 @@ index 0000000..452e282
 +                if resuming, self.watchBaselineIdentity == session.persistentIdentity, let known = self.watchKnownFingerprints {
 +                    let missed = snapshot.filter { $0.libraryFingerprint.map { !known.contains($0) } ?? false }
 +                    if !missed.isEmpty {
-+                        _ = await self.downloads.enqueueDownloads(missed, autoExportToPhotoLibrary:self.connection.autoExportToPhotoLibrary,
++                        let queued = await self.downloads.enqueueDownloads(missed, autoExportToPhotoLibrary:self.connection.autoExportToPhotoLibrary,
 +                            prioritizeJPEGDownloads:self.connection.prioritizeJPEGDownloads)
++                        guard queued else { throw CameraAppError.unsupportedOperation("漏传文件未能全部入队，旧补传基线保留，可重试。") }
 +                        self.shell.appendLog("身份核对通过，已补入断线期间的 \(missed.count) 个文件。")
 +                    }
 +                }
 +                self.watchKnownFingerprints = keys.count == snapshot.count ? keys : nil
 +                self.watchBaselineIdentity = session.persistentIdentity
++                self.persistRecoveryCheckpoint()
 +                if self.watchKnownFingerprints == nil {
 +                    self.shell.appendLog("部分文件缺少稳定身份，自动补传已禁用；边拍边传继续运行。")
 +                }
@@ -2587,6 +2643,7 @@ index 0000000..452e282
 +                            autoExportToPhotoLibrary: self.connection.autoExportToPhotoLibrary,
 +                            prioritizeJPEGDownloads: self.connection.prioritizeJPEGDownloads)
 +                        if queued { self.watchKnownFingerprints?.formUnion(incoming.compactMap(\.libraryFingerprint)) }
++                        self.persistRecoveryCheckpoint()
 +                        self.status = "发现 \(incoming.count) 个新文件，已加入队列。"
 +                    }
 +                }
@@ -2600,6 +2657,11 @@ index 0000000..452e282
 +    func stopWatching() {
 +        wantsWatch = false
 +        if let remote { Task { await remote.stopCaptureWatch() } }
++    }
++    private func persistRecoveryCheckpoint() {
++        guard let identity = watchBaselineIdentity, let fingerprints = watchKnownFingerprints else { return }
++        do { try CaptureRecoveryCheckpoint(identity:identity,fingerprints:fingerprints).save() }
++        catch { shell.appendLog("补传基线保存失败，应用重启后不能恢复此基线：\(error.localizedDescription)") }
 +    }
 +    func sessionChanged() {
 +        guard !isRecovering else { return }
@@ -3346,7 +3408,7 @@ index 0000000..77472e8
 +    }
 +}
 diff --git a/Features/Downloads/DownloadManagerViewModel.swift b/Features/Downloads/DownloadManagerViewModel.swift
-index ed0c071..f255095 100644
+index ed0c071..2084e4b 100644
 --- a/Features/Downloads/DownloadManagerViewModel.swift
 +++ b/Features/Downloads/DownloadManagerViewModel.swift
 @@ -32,6 +32,8 @@ final class DownloadManagerViewModel: ObservableObject {
@@ -3358,7 +3420,16 @@ index ed0c071..f255095 100644
      private var queueState = DownloadQueueState()
      private var queueID = UUID()
      private var queueRunnerTask: Task<Void, Never>?
-@@ -126,9 +128,29 @@ final class DownloadManagerViewModel: ObservableObject {
+@@ -120,15 +122,38 @@ final class DownloadManagerViewModel: ObservableObject {
+         autoExportToPhotoLibrary: Bool,
+         prioritizeJPEGDownloads: Bool
+     ) async -> Bool {
++        if let reason = sessionCoordinator.exclusiveUseReason {
++            shell.showAlert(title:"相机正在使用",message:"请先停止\(reason)，再开始下载。"); return false
++        }
+         guard sessionCoordinator.hasActiveSession else {
+             shell.handle(CameraAppError.notConnected)
+             return false
          }
  
          guard !assets.isEmpty else { return true }
@@ -3390,18 +3461,21 @@ index ed0c071..f255095 100644
              prioritizeJPEGDownloads: prioritizeJPEGDownloads
          )
          let didReorder = orderedAssets.map(\.id) != assets.map(\.id)
-@@ -166,7 +188,9 @@ final class DownloadManagerViewModel: ObservableObject {
+@@ -166,7 +191,12 @@ final class DownloadManagerViewModel: ObservableObject {
      }
  
      func startQueueIfPossible() async {
 -        guard queueRunnerTask == nil else { return }
++        guard sessionCoordinator.exclusiveUseReason == nil else {
++            shell.appendLog("相机正用于拍摄或补传扫描，下载队列暂未启动。"); return
++        }
 +        guard queueRunnerTask == nil, !isStartingQueue else { return }
 +        isStartingQueue = true
 +        defer { isStartingQueue = false }
          guard queueState.jobs.contains(where: { $0.status.canResume }) else {
              queueState.status = .idle
              queueState.activeJobID = nil
-@@ -195,11 +219,14 @@ final class DownloadManagerViewModel: ObservableObject {
+@@ -195,11 +225,14 @@ final class DownloadManagerViewModel: ObservableObject {
              return
          }
  
@@ -3416,7 +3490,7 @@ index ed0c071..f255095 100644
      func pauseQueue() {
          if let queueRunnerTask {
              queueStopReason = .pause
-@@ -373,7 +400,7 @@ final class DownloadManagerViewModel: ObservableObject {
+@@ -373,7 +406,7 @@ final class DownloadManagerViewModel: ObservableObject {
                  updateJob(job.id) { queuedJob in
                      queuedJob.status = .interrupted
                      queuedJob.updatedAt = Date()
@@ -3425,7 +3499,7 @@ index ed0c071..f255095 100644
                  }
                  queueState.activeJobID = nil
                  queueState.status = .interrupted
-@@ -386,10 +413,19 @@ final class DownloadManagerViewModel: ObservableObject {
+@@ -386,10 +419,19 @@ final class DownloadManagerViewModel: ObservableObject {
                  return
              }
  
@@ -3445,7 +3519,7 @@ index ed0c071..f255095 100644
                  queuedJob.startedAt = queuedJob.startedAt ?? Date()
                  queuedJob.updatedAt = Date()
                  queuedJob.errorMessage = nil
-@@ -445,7 +481,10 @@ final class DownloadManagerViewModel: ObservableObject {
+@@ -445,7 +487,10 @@ final class DownloadManagerViewModel: ObservableObject {
                  currentTemporaryURL = temporaryURL
  
                  let measuredSize = Self.fileSize(at: temporaryURL)
@@ -3457,7 +3531,7 @@ index ed0c071..f255095 100644
                  finalizeProgress(forJobID: job.id, finalSize: finalSize)
  
                  var record = try await downloadStore.storeDownloadedFile(at: temporaryURL, from: job.asset)
-@@ -501,6 +540,10 @@ final class DownloadManagerViewModel: ObservableObject {
+@@ -501,6 +546,10 @@ final class DownloadManagerViewModel: ObservableObject {
                  }
              } catch {
                  cleanupTemporaryDownloadFile()
@@ -3468,7 +3542,7 @@ index ed0c071..f255095 100644
                  let mappedStatus = interruptibleStatus(for: error)
                  let message = shell.userFacingMessage(for: error)
                  updateJob(job.id) { queuedJob in
-@@ -579,7 +622,7 @@ final class DownloadManagerViewModel: ObservableObject {
+@@ -579,7 +628,7 @@ final class DownloadManagerViewModel: ObservableObject {
          }
      }
  
@@ -3477,7 +3551,7 @@ index ed0c071..f255095 100644
          guard let activeJobID = queueState.activeJobID else { return }
          queueStopReason = .interrupted(reason)
          updateJob(activeJobID) { job in
-@@ -593,7 +636,9 @@ final class DownloadManagerViewModel: ObservableObject {
+@@ -593,7 +642,9 @@ final class DownloadManagerViewModel: ObservableObject {
      }
  
      private func applyProgress(_ transportProgress: DownloadTransferProgress, toJobID jobID: UUID) {
@@ -3620,15 +3694,24 @@ index 0000000..046e04e
 +    }
 +}
 diff --git a/Features/PhotoBrowser/GalleryContainerView.swift b/Features/PhotoBrowser/GalleryContainerView.swift
-index fe1056b..2ad560e 100644
+index fe1056b..e59ad4d 100644
 --- a/Features/PhotoBrowser/GalleryContainerView.swift
 +++ b/Features/PhotoBrowser/GalleryContainerView.swift
-@@ -5,8 +5,20 @@ struct GalleryContainerView: View {
+@@ -5,8 +5,29 @@ struct GalleryContainerView: View {
      @ObservedObject var downloadViewModel: DownloadManagerViewModel
      @ObservedObject var connectionViewModel: ConnectionViewModel
  
 +    @AppStorage("linkRAWCompanions") private var linkRAWCompanions = true
 +    @State private var showCompare = false
++    @State private var comparingAssets: [PhotoAsset] = []
++    private var comparisonSelection: [PhotoAsset] {
++        let selected = galleryViewModel.selectedAssets.filter { $0.kind != .movie }
++        if selected.count == 2 { return selected }
++        var groups: [String:[PhotoAsset]] = [:]
++        for asset in selected { groups[asset.companionGroup ?? asset.id.uuidString, default:[]].append(asset) }
++        return groups.values.compactMap { group in group.first(where: { $0.kind == .jpeg }) ?? group.first }
++            .sorted { $0.captureDate < $1.captureDate }
++    }
 +
      var body: some View {
          PhotoBrowserView(
@@ -3644,7 +3727,7 @@ index fe1056b..2ad560e 100644
              activeSession: connectionViewModel.activeSession,
              assets: galleryViewModel.photoAssets,
              hasMorePhotos: galleryViewModel.hasMorePhotos,
-@@ -30,7 +42,7 @@ struct GalleryContainerView: View {
+@@ -30,7 +51,7 @@ struct GalleryContainerView: View {
                  }
              },
              onToggleSelection: { asset in
@@ -3653,28 +3736,28 @@ index fe1056b..2ad560e 100644
              },
              onSelectAllAssets: {
                  galleryViewModel.selectAllAssets()
-@@ -65,5 +77,16 @@ struct GalleryContainerView: View {
+@@ -65,5 +86,16 @@ struct GalleryContainerView: View {
                  await galleryViewModel.previewData(for: asset)
              }
          )
 +        .toolbar {
 +            ToolbarItemGroup(placement:.navigationBarTrailing) {
 +                NavigationLink { CaptureProjectsView(downloads:downloadViewModel, selectedAssets:galleryViewModel.selectedAssets) } label: { Label("拍摄项目",systemImage:"folder") }
-+                Button { showCompare = true } label: { Label("双图对比",systemImage:"rectangle.split.2x1") }
-+                    .disabled(galleryViewModel.selectedAssets.count != 2 || galleryViewModel.selectedAssets.contains { $0.kind == .movie } || galleryViewModel.isLoading || downloadViewModel.isDownloading)
++                Button { comparingAssets = comparisonSelection; showCompare = true } label: { Label("双图对比",systemImage:"rectangle.split.2x1") }
++                    .disabled(comparisonSelection.count != 2 || galleryViewModel.isLoading || downloadViewModel.isDownloading)
 +            }
 +        }
 +        .fullScreenCover(isPresented:$showCompare) {
-+            PhotoCompareView(assets:galleryViewModel.selectedAssets, loadPreview:{ await galleryViewModel.previewData(for:$0) },
++            PhotoCompareView(assets:comparingAssets, loadPreview:{ await galleryViewModel.previewData(for:$0) },
 +                isStarred:{ galleryViewModel.isStarred($0) }, toggleStar:{ galleryViewModel.toggleStar($0) })
 +        }
      }
  }
 diff --git a/Features/PhotoBrowser/GalleryViewModel.swift b/Features/PhotoBrowser/GalleryViewModel.swift
-index fc065af..6dde3f7 100644
+index fc065af..147e837 100644
 --- a/Features/PhotoBrowser/GalleryViewModel.swift
 +++ b/Features/PhotoBrowser/GalleryViewModel.swift
-@@ -7,6 +7,84 @@ final class GalleryViewModel: ObservableObject {
+@@ -7,6 +7,87 @@ final class GalleryViewModel: ObservableObject {
      @Published var hasMorePhotos = false
      @Published var selectedAssetIDs: Set<UUID> = []
      @Published var isLoading = false
@@ -3710,7 +3793,7 @@ index fc065af..6dde3f7 100644
 +    }
 +
 +    func readWholeCard(select: Bool, predicate: @escaping (PhotoAsset) -> Bool, linkPairs: Bool) {
-+        guard wholeCardTask == nil, !isLoading else { return }
++        guard wholeCardTask == nil, !isLoading, sessionCoordinator.exclusiveUseReason == nil else { return }
 +        wantsWholeCard = true
 +        isReadingWholeCard = true
 +        wholeCardTask = Task { [weak self] in
@@ -3741,8 +3824,11 @@ index fc065af..6dde3f7 100644
 +        guard !isLoading, let sessionID = sessionCoordinator.activeSession?.id else {
 +            throw CameraAppError.unsupportedOperation("请等待当前照片读取结束。")
 +        }
++        guard let lease = sessionCoordinator.acquireCameraUse("补传文件扫描") else {
++            throw CameraAppError.unsupportedOperation("相机正在执行其他拍摄操作，请先停止。")
++        }
 +        isLoading = true
-+        defer { isLoading = false }
++        defer { isLoading = false; sessionCoordinator.releaseCameraUse(lease) }
 +        try await loadPhotos(resetTraversal: true)
 +        while hasMorePhotos {
 +            try Task.checkCancellation()
@@ -3759,23 +3845,33 @@ index fc065af..6dde3f7 100644
  
      private let thumbnailService: any AssetThumbnailServing
      private let sessionCoordinator: CameraSessionCoordinator
-@@ -41,6 +119,7 @@ final class GalleryViewModel: ObservableObject {
+@@ -33,14 +114,15 @@ final class GalleryViewModel: ObservableObject {
+     }
+ 
+     func canRefreshPhotos(for session: CameraSession?) -> Bool {
+-        session?.capabilities.contains(.listAssets) == true && !isLoading
++        session?.capabilities.contains(.listAssets) == true && !isLoading && sessionCoordinator.exclusiveUseReason == nil
+     }
+ 
+     func canLoadMorePhotos(for session: CameraSession?) -> Bool {
+-        session?.capabilities.contains(.listAssets) == true && hasMorePhotos && !isLoading
++        session?.capabilities.contains(.listAssets) == true && hasMorePhotos && !isLoading && sessionCoordinator.exclusiveUseReason == nil
      }
  
      func refreshPhotos() async {
-+        guard !isLoading else { return }
++        guard !isLoading, sessionCoordinator.exclusiveUseReason == nil else { return }
          do {
              isLoading = true
              shell.setGlobalActivityTitle(CameraWorkflowState.loadingPhotos.title)
-@@ -54,6 +133,7 @@ final class GalleryViewModel: ObservableObject {
+@@ -54,6 +136,7 @@ final class GalleryViewModel: ObservableObject {
      }
  
      func loadMorePhotos() async {
-+        guard !isLoading else { return }
++        guard !isLoading, sessionCoordinator.exclusiveUseReason == nil else { return }
          do {
              isLoading = true
              shell.setGlobalActivityTitle(CameraWorkflowState.loadingPhotos.title)
-@@ -67,6 +147,7 @@ final class GalleryViewModel: ObservableObject {
+@@ -67,6 +150,7 @@ final class GalleryViewModel: ObservableObject {
      }
  
      func resetForDisconnectedSession() {
@@ -3783,7 +3879,7 @@ index fc065af..6dde3f7 100644
          photoAssets = []
          hasMorePhotos = false
          selectedAssetIDs = []
-@@ -75,7 +156,13 @@ final class GalleryViewModel: ObservableObject {
+@@ -75,7 +159,13 @@ final class GalleryViewModel: ObservableObject {
          }
      }
  
@@ -3798,7 +3894,7 @@ index fc065af..6dde3f7 100644
          if selectedAssetIDs.contains(asset.id) {
              selectedAssetIDs.remove(asset.id)
          } else {
-@@ -87,6 +174,10 @@ final class GalleryViewModel: ObservableObject {
+@@ -87,11 +177,16 @@ final class GalleryViewModel: ObservableObject {
          selectedAssetIDs = Set(photoAssets.map(\.id))
      }
  
@@ -3809,7 +3905,21 @@ index fc065af..6dde3f7 100644
      func clearSelection() {
          selectedAssetIDs.removeAll()
      }
-@@ -139,6 +230,8 @@ final class GalleryViewModel: ObservableObject {
+ 
+     func thumbnailData(for asset: PhotoAsset) async -> Data? {
++        guard sessionCoordinator.exclusiveUseReason == nil else { return nil }
+         guard let session = sessionCoordinator.activeSession,
+               let transport = sessionCoordinator.activeTransport else {
+             return nil
+@@ -105,6 +200,7 @@ final class GalleryViewModel: ObservableObject {
+     }
+ 
+     func previewData(for asset: PhotoAsset) async -> Data? {
++        guard sessionCoordinator.exclusiveUseReason == nil else { return nil }
+         guard let session = sessionCoordinator.activeSession,
+               let transport = sessionCoordinator.activeTransport else {
+             return nil
+@@ -139,6 +235,8 @@ final class GalleryViewModel: ObservableObject {
              resetTraversal: resetTraversal,
              limit: pageSize
          )
@@ -4427,10 +4537,10 @@ index 0000000..43c31c8
 +<key>com.apple.developer.networking.HotspotConfiguration</key><true/>
 +</dict></plist>
 diff --git a/Resources/Info.plist b/Resources/Info.plist
-index 2e36032..3f10e9f 100644
+index 2e36032..985ea16 100644
 --- a/Resources/Info.plist
 +++ b/Resources/Info.plist
-@@ -23,11 +23,13 @@
+@@ -23,13 +23,19 @@
  	<key>LSRequiresIPhoneOS</key>
  	<true/>
  	<key>NSLocalNetworkUsageDescription</key>
@@ -4447,7 +4557,13 @@ index 2e36032..3f10e9f 100644
 -	<true/>
  	<key>UIApplicationSupportsIndirectInputEvents</key>
  	<true/>
++    <key>UIFileSharingEnabled</key>
++    <true/>
++    <key>LSSupportsOpeningDocumentsInPlace</key>
++    <true/>
  	<key>UISupportedInterfaceOrientations</key>
+ 	<array>
+ 		<string>UIInterfaceOrientationPortrait</string>
 diff --git a/Resources/ThirdPartyNotices.txt b/Resources/ThirdPartyNotices.txt
 new file mode 100644
 index 0000000..33a8ac1
@@ -5503,10 +5619,10 @@ index eef42ce..4ff7b64 100644
  extension CameraTransportFactory: CameraTransportFactoryProtocol {}
 diff --git a/Services/CameraWiFiCoordinator.swift b/Services/CameraWiFiCoordinator.swift
 new file mode 100644
-index 0000000..6f15dce
+index 0000000..0d32a57
 --- /dev/null
 +++ b/Services/CameraWiFiCoordinator.swift
-@@ -0,0 +1,134 @@
+@@ -0,0 +1,140 @@
 +import Foundation
 +@preconcurrency import NetworkExtension
 +import Security
@@ -5527,6 +5643,7 @@ index 0000000..6f15dce
 +    static let shared = CameraWiFiCoordinator()
 +    @Published private(set) var profiles: [CameraWiFiProfile] = []
 +    @Published var status = "首次保存相机网络，之后连接时自动请求加入。"
++    private var preparing = false
 +    private let key = "cameraWiFiProfiles.v1"
 +    private var selected: [String: String] {
 +        get { UserDefaults.standard.dictionary(forKey: "selectedCameraWiFi.v1") as? [String:String] ?? [:] }
@@ -5565,7 +5682,10 @@ index 0000000..6f15dce
 +        profiles.removeAll { $0.id == item.id }; SecItemDelete(query(item.id) as CFDictionary)
 +        if selected[item.mode.rawValue] == item.id.uuidString { selected.removeValue(forKey: item.mode.rawValue) }
 +        // 用户明确删除本应用保存的相机网络时，移除本应用安装的对应系统配置。
-+        NEHotspotConfigurationManager.shared.removeConfiguration(forSSID: item.ssid); persist()
++        if !profiles.contains(where: { $0.ssid == item.ssid }) {
++            NEHotspotConfigurationManager.shared.removeConfiguration(forSSID: item.ssid)
++        }
++        persist()
 +    }
 +    func bind(_ session: CameraSession, mode: CameraTransportMode) throws {
 +        guard let p = profile(for: mode), let i = profiles.firstIndex(where: { $0.id == p.id }), enabled else { return }
@@ -5575,6 +5695,8 @@ index 0000000..6f15dce
 +        profiles[i].cameraIdentity = session.persistentIdentity; persist()
 +    }
 +    func prepare(mode: CameraTransportMode) async throws {
++        guard !preparing else { throw message("上一条系统 Wi-Fi 请求尚未结束，请先完成或取消系统提示。") }
++        preparing = true; defer { preparing = false }
 +        guard enabled else { status = "自动加入已关闭，使用当前网络。"; return }
 +        let fuji = mode == .experimentalFuji || mode == .experimentalFujiLegacy
 +        if fuji {
@@ -5639,6 +5761,31 @@ index 0000000..6f15dce
 +        var result: CFTypeRef?
 +        guard SecItemCopyMatching(q as CFDictionary, &result) == errSecSuccess, let data = result as? Data else { return nil }
 +        return String(data:data, encoding:.utf8)
++    }
++}
+diff --git a/Services/CaptureRecoveryCheckpoint.swift b/Services/CaptureRecoveryCheckpoint.swift
+new file mode 100644
+index 0000000..bf3b432
+--- /dev/null
++++ b/Services/CaptureRecoveryCheckpoint.swift
+@@ -0,0 +1,19 @@
++import Foundation
++
++struct CaptureRecoveryCheckpoint: Codable {
++    var identity: String
++    var fingerprints: Set<String>
++    var updatedAt = Date()
++    static var url: URL {
++        FileManager.default.urls(for:.applicationSupportDirectory,in:.userDomainMask).first!
++            .appendingPathComponent("CameraWorkflow",isDirectory:true).appendingPathComponent("capture-recovery.json")
++    }
++    static func load() throws -> Self? {
++        guard FileManager.default.fileExists(atPath:url.path) else { return nil }
++        return try JSONDecoder().decode(Self.self,from:Data(contentsOf:url))
++    }
++    func save() throws {
++        try FileManager.default.createDirectory(at:url.deletingLastPathComponent(),withIntermediateDirectories:true)
++        try JSONEncoder().encode(self).write(to:Self.url,options:.atomic)
 +    }
 +}
 diff --git a/Services/DownloadLiveActivityController.swift b/Services/DownloadLiveActivityController.swift

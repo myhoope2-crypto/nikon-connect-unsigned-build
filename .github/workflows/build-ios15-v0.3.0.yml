@@ -51,6 +51,7 @@ jobs:
           set -euo pipefail
           git -C source apply "$GITHUB_WORKSPACE/build-config/patches/NikonConnect-ios15-v0.3.0.patch"
           cp "$GITHUB_WORKSPACE/build-config/patches/NikonConnect-ios15-v0.3.0.patch" "$GITHUB_WORKSPACE/result/source-ios15-v0.3.0.patch"
+          cp "$GITHUB_WORKSPACE/source/Resources/CameraConnect.entitlements" "$GITHUB_WORKSPACE/result/NikonConnect-v0.3.0-签名权限.plist"
 
       - name: 安装工程生成工具
         env:
@@ -134,6 +135,7 @@ jobs:
             result/SHA256SUMS-ios15-v0.3.0.txt
             result/build-info-ios15-v0.3.0.txt
             result/source-ios15-v0.3.0.patch
+            result/NikonConnect-v0.3.0-签名权限.plist
             result/ios15-v0.3.0-linked-libraries.txt
           if-no-files-found: error
           retention-days: 7
