@@ -105,10 +105,10 @@ index 773d2d6..89f8f48 100644
          switch state {
 diff --git a/App/AppearanceFixtures.swift b/App/AppearanceFixtures.swift
 new file mode 100644
-index 0000000..4633ff6
+index 0000000..9a2cc05
 --- /dev/null
 +++ b/App/AppearanceFixtures.swift
-@@ -0,0 +1,116 @@
+@@ -0,0 +1,123 @@
 +#if DEBUG
 +// 仅在模拟器 Debug 外观验证时使用；Release IPA 不包含这些入口和模拟传输。
 +import Foundation
@@ -136,7 +136,9 @@ index 0000000..4633ff6
 +        (UInt16(0x5007), "光圈", ["f/2.8", "f/4", "f/5.6"]),
 +        (UInt16(0x500d), "快门时间", ["1/250 秒", "1/500 秒"]),
 +        (UInt16(0x5010), "曝光补偿", ["0 EV", "+0.3 EV"]),
-+        (UInt16(0x5005), "白平衡", ["自动", "日光"])
++        (UInt16(0x5005), "白平衡", ["自动", "日光"]),
++        (UInt16(0xd001), "胶片模拟", ["PROVIA / 标准", "CLASSIC CHROME / 经典正片", "REALA ACE / 真实色彩"]),
++        (UInt16(0xd017), "白平衡色温", ["5600 K（开尔文）", "6500 K（开尔文）"])
 +    ].map { value in
 +        let choices = value.2.enumerated().map { CameraParameterChoice(data: Data([UInt8($0.offset)]), title: $0.element) }
 +        return CameraParameter(id: value.0, title: value.1, current: choices[0], choices: choices, writable: true)
@@ -220,8 +222,13 @@ index 0000000..4633ff6
 +    func stopLiveView() async {}
 +    func liveViewFrame() async throws -> Data { await AppearanceFixtures.jpeg(light: false) }
 +    func releaseShutter() async throws { throw CameraAppError.unsupportedOperation("外观验证：模拟相机无法实际拍照。") }
-+    func cameraParameters() async throws -> [CameraParameter] { AppearanceFixtures.parameters }
-+    func setCameraParameter(_ parameter: UInt16, to choice: CameraParameterChoice) async throws {}
++    private var parameterValues = AppearanceFixtures.parameters
++    func cameraParameters() async throws -> [CameraParameter] { parameterValues }
++    func setCameraParameter(_ parameter: UInt16, to choice: CameraParameterChoice) async throws {
++        guard let index = parameterValues.firstIndex(where: { $0.id == parameter }) else { return }
++        let old = parameterValues[index]
++        parameterValues[index] = CameraParameter(id: old.id, title: old.title, current: choice, choices: old.choices, writable: old.writable)
++    }
 +    func newlyCapturedAssets(in session: CameraSession) async throws -> [PhotoAsset] { [] }
 +}
 +#endif
@@ -491,10 +498,10 @@ index 0000000..f801c87
 +}
 diff --git a/AppearanceUITests/AppearanceUITests.swift b/AppearanceUITests/AppearanceUITests.swift
 new file mode 100644
-index 0000000..0f868a8
+index 0000000..d965fba
 --- /dev/null
 +++ b/AppearanceUITests/AppearanceUITests.swift
-@@ -0,0 +1,117 @@
+@@ -0,0 +1,122 @@
 +import XCTest
 +
 +@MainActor
@@ -517,8 +524,9 @@ index 0000000..0f868a8
 +    private func tab(_ name: String) { app.tabBars.buttons[name].tap() }
 +    private func scrollUp() {
 +        // 从内容中部向上拖动，避免触碰固定在底部的下载操作栏。
-+        app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.50)).press(forDuration: 0.05,
-+            thenDragTo: app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.20)))
++        let content = app.scrollViews.firstMatch
++        content.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.50)).press(forDuration: 0.05,
++            thenDragTo: content.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.15)))
 +    }
 +    private func show(_ element: XCUIElement, maxSwipes: Int = 8) {
 +        for _ in 0..<maxSwipes {
@@ -560,7 +568,7 @@ index 0000000..0f868a8
 +        let start = app.descendants(matching: .any).matching(identifier: "photos.dateStart").firstMatch
 +        show(start); shot("09-暗黑日期筛选")
 +        start.coordinate(withNormalizedOffset: CGVector(dx: 0.90, dy: 0.5)).tap()
-+        shot("10-暗黑日期弹层"); app.navigationBars["照片"].tap()
++        shot("10-暗黑日期弹层"); app.coordinate(withNormalizedOffset: CGVector(dx: 0.08, dy: 0.12)).tap()
 +        show(dateToggle)
 +        dateToggle.coordinate(withNormalizedOffset: CGVector(dx: 0.95, dy: 0.5)).tap()
 +        XCTAssertEqual(dateToggle.value as? String, "0")
@@ -581,20 +589,24 @@ index 0000000..0f868a8
 +    }
 +    func testRemoteControlsMenusAndAlert() {
 +        launch(); setMode("暗黑"); tab("拍摄"); shot("19-暗黑拍摄控制")
-+        app.buttons["开始实时取景"].tap()
++        app.buttons["进入实时取景"].tap()
 +        XCTAssertTrue(app.buttons["停止实时取景"].waitForExistence(timeout: 10))
-+        shot("20-暗黑实时取景与停止按钮")
++        shot("20-暗黑独立实时取景与核心参数")
 +        app.buttons["停止实时取景"].tap()
 +        XCTAssertTrue(app.buttons["开始实时取景"].waitForExistence(timeout: 10))
++        show(app.buttons["live.parameter.iso"]); shot("23-暗黑取景相机参数")
++        app.buttons["live.parameter.iso"].tap(); shot("24-暗黑取景参数菜单"); app.buttons["200"].tap()
++        show(app.buttons["live.parameter.filmSimulation"]); shot("32-暗黑富士胶片模拟与色温")
++        app.buttons["live.parameter.filmSimulation"].tap(); shot("33-暗黑胶片模拟选项菜单")
++        app.buttons["CLASSIC CHROME / 经典正片"].tap()
++        app.buttons["退出取景"].tap()
++        XCTAssertTrue(app.buttons["进入实时取景"].waitForExistence(timeout: 10))
 +        app.buttons["遥控快门"].tap()
 +        XCTAssertTrue(app.alerts.firstMatch.waitForExistence(timeout: 10))
 +        shot("21-暗黑系统错误弹窗"); app.alerts.buttons["确定"].tap()
 +        show(app.buttons["开始边拍边传"]); app.buttons["开始边拍边传"].tap()
 +        XCTAssertTrue(app.buttons["停止边拍边传"].waitForExistence(timeout: 10))
 +        shot("22-暗黑边拍边传"); app.buttons["停止边拍边传"].tap()
-+        show(app.buttons["刷新参数"]); app.buttons["刷新参数"].tap()
-+        show(app.staticTexts["白平衡"]); shot("23-暗黑相机参数")
-+        app.buttons["100"].tap(); shot("24-暗黑参数菜单"); app.buttons["200"].tap()
 +    }
 +    func testConnectionSetupBrandMenuPairingAndDisabledControls() {
 +        launch(connected: false); setMode("暗黑"); tab("相机"); shot("25-暗黑连接表单")
@@ -606,7 +618,7 @@ index 0000000..0f868a8
 +        show(app.buttons["连接相机"]); app.buttons["连接相机"].tap()
 +        XCTAssertTrue(app.buttons["停止连接"].waitForExistence(timeout: 3))
 +        shot("28-暗黑停止连接按钮"); app.buttons["停止连接"].tap()
-+        tab("拍摄"); XCTAssertFalse(app.buttons["开始实时取景"].isEnabled)
++        tab("拍摄"); XCTAssertFalse(app.buttons["进入实时取景"].isEnabled)
 +        shot("29-暗黑未连接禁用状态")
 +        tab("照片"); shot("30-暗黑照片空状态")
 +        tab("下载"); shot("31-暗黑下载空状态")
@@ -682,12 +694,167 @@ index 0000000..97cfe3b
 +protocol CameraConnectionChecking: CameraTransport {
 +    func checkConnection() async throws
 +}
+diff --git a/Domain/CameraParameterLabels.swift b/Domain/CameraParameterLabels.swift
+new file mode 100644
+index 0000000..ad73680
+--- /dev/null
++++ b/Domain/CameraParameterLabels.swift
+@@ -0,0 +1,149 @@
++import Foundation
++
++// 协议事实参考 libgphoto2 的 PTP 配置、libfuji、mikefsq/ptp；不生成相机未公布的选项。
++// 厂商编号可能重复，因此必须由连接协议指定 Profile（品牌解码配置）。
++enum CameraParameterLabels {
++    static func title(code: UInt16, value: Int64, profile: CameraParameterDecoder.Profile) -> String {
++        let unknown = String(format: "未识别（0x%X）", UInt32(truncatingIfNeeded: value))
++        if profile == .fuji {
++            if code == 0xd001 { return films[value] ?? unknown }
++            if code == 0x500d { return fujiShutters[value] ?? unknown }
++            if code == 0xd02a {
++                if value == 0x8001 { return "自动 ISO" }
++                // 带其他标志位的无线 ISO 值缺少稳定定义，不把推测当作相机标签。
++                return value > 0 && value < 0x8000 ? String(value) : unknown
++            }
++            if code == 0x500f && [-1, -2, -3].contains(value) { return "自动 ISO \(-value)" }
++        }
++        if profile == .nikon && code == 0xd100 {
++            switch value {
++            case 0xffffffff: return "B 门（Bulb）"
++            case 0xfffffffd: return "T 门（Time）"
++            case 0xfffffffe: return "X 200（闪光同步）"
++            default:
++                let numerator = value >> 16, denominator = value & 0xffff
++                guard numerator > 0, denominator > 0 else { return unknown }
++                return denominator == 1 ? "\(numerator) 秒" : "\(numerator)/\(denominator) 秒"
++            }
++        }
++        switch code {
++        case 0x5007:
++            guard value > 0, value < 65535 else { return "相机控制 / 未提供光圈" }
++            return "f/" + decimal(Double(value) / 100)
++        case 0x500d:
++            if value == 0xffffffff { return "B 门（Bulb）" }
++            guard value > 0 else { return unknown }
++            if value < 10000 { return "1/\(Int((10000.0 / Double(value)).rounded())) 秒" }
++            return decimal(Double(value) / 10000) + " 秒"
++        case 0x500f:
++            if value == 65535 { return "自动 ISO" }
++            return value > 0 ? String(value) : unknown
++        case 0x5010:
++            // 相机用千分之一档编码；1/3、2/3 档按机身常用的一位小数显示。
++            return String(format: "%+.1f EV（曝光档）", Double(value) / 1000)
++        case 0x5005:
++            if profile == .nikon, let name = nikonWhiteBalance[value] { return name }
++            if profile == .fuji, let name = fujiWhiteBalance[value] { return name }
++            return standardWhiteBalance[value] ?? unknown
++        case 0xd017 where profile == .fuji: return "\(value) K（开尔文）"
++        case 0xd01e where profile == .nikon: return "\(value) K（开尔文）"
++        default: return unknown
++        }
++    }
++    private static func decimal(_ value: Double) -> String {
++        String(format: value.rounded() == value ? "%.0f" : "%.1f", value)
++    }
++    private static let standardWhiteBalance: [Int64: String] = [
++        1: "手动", 2: "自动", 3: "一键自动", 4: "日光", 5: "荧光灯", 6: "白炽灯", 7: "闪光灯"
++    ]
++    private static let nikonWhiteBalance: [Int64: String] = [
++        0x8010: "阴天", 0x8011: "背阴", 0x8012: "选择色温", 0x8013: "手动预设",
++        0x8014: "关闭", 0x8015: "闪光灯", 0x8016: "自然光自动适应"
++    ]
++    private static let fujiWhiteBalance: [Int64: String] = [
++        0x8001: "荧光灯 1", 0x8002: "荧光灯 2", 0x8003: "荧光灯 3", 0x8004: "荧光灯 4",
++        0x8005: "荧光灯 5", 0x8006: "阴天 / 阴影", 0x8007: "选择色温", 0x8008: "自定义 1",
++        0x8009: "自定义 2", 0x800a: "自定义 3", 0x800b: "自定义 4", 0x800c: "自定义 5"
++    ]
++    private static let films: [Int64: String] = [
++        1: "PROVIA / 标准", 2: "Velvia / 鲜艳", 3: "ASTIA / 柔和", 4: "PRO Neg. Hi / 专业负片高对比",
++        5: "PRO Neg. Std / 专业负片标准", 6: "黑白", 7: "黑白＋黄滤镜", 8: "黑白＋红滤镜", 9: "黑白＋绿滤镜",
++        10: "棕褐色", 11: "CLASSIC CHROME / 经典正片", 12: "ACROS / 黑白", 13: "ACROS＋黄滤镜",
++        14: "ACROS＋红滤镜", 15: "ACROS＋绿滤镜", 16: "ETERNA / 影院", 17: "CLASSIC Neg. / 经典负片",
++        18: "ETERNA BLEACH BYPASS / 漂白效果", 19: "NOSTALGIC Neg. / 怀旧负片", 20: "REALA ACE / 真实色彩"
++    ]
++    // 富士机身采用显示刻度而非直接显示微秒数，例如 32000000 对应机身的 30 秒。
++    private static let fujiShutters: [Int64: String] = [
++        0xffffffff: "B 门（Bulb）",
++        64000180: "60 分钟",
++        64000150: "30 分钟",
++        64000120: "15 分钟",
++        64000090: "8 分钟",
++        64000060: "4 分钟",
++        64000030: "2 分钟",
++        64000000: "60 秒",
++        50796833: "50 秒",
++        40317473: "40 秒",
++        32000000: "30 秒",
++        25398416: "25 秒",
++        20158736: "20 秒",
++        16000000: "15 秒",
++        12699208: "13 秒",
++        10079368: "10 秒",
++        8000000: "8 秒",
++        6349604: "6 秒",
++        5039684: "5 秒",
++        4000000: "4 秒",
++        3174802: "3 秒",
++        2519842: "2.5 秒",
++        2000000: "2 秒",
++        1587401: "1.6 秒",
++        1259921: "1.3 秒",
++        1000000: "1 秒",
++        793700: "0.8 秒",
++        629960: "0.6 秒",
++        500000: "1/2 秒",
++        396850: "0.4 秒",
++        314980: "1/3 秒",
++        250000: "1/4 秒",
++        198425: "1/5 秒",
++        157490: "1/6 秒",
++        125000: "1/8 秒",
++        99212: "1/10 秒",
++        78745: "1/13 秒",
++        62500: "1/15 秒",
++        49606: "1/20 秒",
++        39372: "1/25 秒",
++        31250: "1/30 秒",
++        24803: "1/40 秒",
++        19686: "1/50 秒",
++        15625: "1/60 秒",
++        12401: "1/80 秒",
++        9843: "1/100 秒",
++        7812: "1/125 秒",
++        6200: "1/160 秒",
++        4921: "1/200 秒",
++        3906: "1/250 秒",
++        3100: "1/320 秒",
++        2460: "1/400 秒",
++        1953: "1/500 秒",
++        1550: "1/640 秒",
++        1230: "1/800 秒",
++        976: "1/1000 秒",
++        775: "1/1250 秒",
++        615: "1/1600 秒",
++        488: "1/2000 秒",
++        387: "1/2500 秒",
++        307: "1/3200 秒",
++        244: "1/4000 秒",
++        193: "1/5000 秒",
++        153: "1/6400 秒",
++        122: "1/8000 秒",
++        96: "1/10000 秒",
++        76: "1/13000 秒",
++        61: "1/16000 秒",
++        48: "1/20000 秒",
++        38: "1/25000 秒",
++        30: "1/32000 秒"
++    ]
++}
 diff --git a/Domain/CameraRemoteControl.swift b/Domain/CameraRemoteControl.swift
 new file mode 100644
-index 0000000..28430f9
+index 0000000..8bc48a8
 --- /dev/null
 +++ b/Domain/CameraRemoteControl.swift
-@@ -0,0 +1,121 @@
+@@ -0,0 +1,170 @@
 +import Foundation
 +
 +struct CameraParameterChoice: Identifiable, Equatable, Sendable {
@@ -702,6 +869,43 @@ index 0000000..28430f9
 +    let current: CameraParameterChoice
 +    let choices: [CameraParameterChoice]
 +    let writable: Bool
++    var kind: CameraParameterKind { CameraParameterKind.property(id) }
++    var restriction: String? {
++        if !writable { return "相机未允许修改，或未提供可选值" }
++        if choices.count < 2 { return "当前模式或实体拨盘只允许此值" }
++        return nil
++    }
++    var canChange: Bool { writable && choices.count > 1 }
++}
++
++enum CameraParameterKind: String, CaseIterable, Identifiable, Sendable {
++    case shutter, aperture, iso, whiteBalance, exposureCompensation, filmSimulation, colorTemperature, other
++    var id: String { rawValue }
++    static let core: [Self] = [.shutter, .aperture, .iso, .whiteBalance, .exposureCompensation]
++    var title: String {
++        switch self {
++        case .shutter: return "快门时间"
++        case .aperture: return "光圈"
++        case .iso: return "ISO 感光度"
++        case .whiteBalance: return "白平衡"
++        case .exposureCompensation: return "曝光补偿"
++        case .filmSimulation: return "胶片模拟"
++        case .colorTemperature: return "白平衡色温"
++        case .other: return "其他参数"
++        }
++    }
++    static func property(_ code: UInt16) -> Self {
++        switch code {
++        case 0x500d, 0xd100: return .shutter
++        case 0x5007: return .aperture
++        case 0x500f, 0xd02a: return .iso
++        case 0x5005: return .whiteBalance
++        case 0x5010: return .exposureCompensation
++        case 0xd001: return .filmSimulation // 仅富士配置会请求此厂商属性。
++        case 0xd017, 0xd01e: return .colorTemperature
++        default: return .other
++        }
++    }
 +}
 +
 +protocol CameraRemoteControlling: CameraTransport {
@@ -738,14 +942,18 @@ index 0000000..28430f9
 +    }
 +}
 +
-+// 解析标准 PTP 属性描述。参数及允许值来自相机，避免猜测写入值。
++// 选项顺序、数据宽度及写入值均保留相机描述，不用界面显示文字反算协议值。
 +enum CameraParameterDecoder {
++    enum Profile: Equatable { case standard, nikon, fuji }
 +    static let definitions: [(UInt16, String)] = [
-+        (0x500f, "ISO 感光度"), (0x5007, "光圈"), (0x500d, "快门时间"),
-+        (0x5010, "曝光补偿"), (0x5005, "白平衡")
++        (0x500d, "快门时间"), (0x5007, "光圈"), (0x500f, "ISO 感光度"),
++        (0x5005, "白平衡"), (0x5010, "曝光补偿")
 +    ]
++    static let nikonDefinitions = definitions + [(UInt16(0xd100), "快门时间"), (UInt16(0xd01e), "白平衡色温")]
++    static let fujiDefinitions = definitions + [(UInt16(0xd02a), "ISO 感光度"),
++        (UInt16(0xd001), "胶片模拟"), (UInt16(0xd017), "白平衡色温")]
 +
-+    static func decode(_ data: Data, code: UInt16, title: String, vendorValues: Bool = false) throws -> CameraParameter {
++    static func decode(_ data: Data, code: UInt16, title: String, profile: Profile = .standard) throws -> CameraParameter {
 +        var r = PTPDataReader(data: data)
 +        guard try r.readUInt16() == code else { throw PTPIPError.malformedPayload("参数编号不符") }
 +        let type = try r.readUInt16()
@@ -776,23 +984,31 @@ index 0000000..28430f9
 +            }
 +        }
 +        let choice: (Data) -> CameraParameterChoice = { bytes in
-+            let value = number(bytes, type: type)
-+            if vendorValues { return CameraParameterChoice(data: bytes, title: "相机值 \(value)") }
-+            let label: String
-+            switch code {
-+            case 0x5007: label = String(format: "f/%.1f", Double(value) / 100)
-+            case 0x500d:
-+                label = value > 0 && value < 10000 ? "1/\(Int((10000.0 / Double(value)).rounded())) 秒" : String(format: "%.2f 秒", Double(value) / 10000)
-+            case 0x5010: label = String(format: "%+.2f EV（曝光档）", Double(value) / 1000)
-+            case 0x5005:
-+                label = [1: "手动", 2: "自动", 3: "自动预设", 4: "日光", 5: "荧光灯", 6: "白炽灯", 7: "闪光灯"][Int(value)] ?? "白平衡 \(value)"
-+            default: label = String(value)
-+            }
-+            return CameraParameterChoice(data: bytes, title: label)
++            CameraParameterChoice(data: bytes, title: CameraParameterLabels.title(
++                code: code, value: number(bytes, type: type), profile: profile))
 +        }
++        var seen = Set<Data>()
++        let choices = values.filter { seen.insert($0).inserted }.map(choice)
 +        return CameraParameter(id: code, title: title, current: choice(current),
-+            choices: Array(Set(values)).sorted { number($0, type: type) < number($1, type: type) }.map(choice),
-+            writable: writable && !values.isEmpty)
++            choices: choices, writable: writable && !choices.isEmpty)
++    }
++
++    // 同一功能只显示一个属性。尼康优先使用分子/分母快门；富士优先使用可写的标准 ISO。
++    static func preferred(_ parameters: [CameraParameter], profile: Profile) -> [CameraParameter] {
++        var result = parameters
++        if profile == .nikon, let vendor = parameters.first(where: { $0.id == 0xd100 }),
++           vendor.canChange || !parameters.contains(where: { $0.id == 0x500d && $0.canChange }) {
++            result.removeAll { $0.id == 0x500d }
++        } else if profile == .nikon, parameters.contains(where: { $0.id == 0x500d }) {
++            result.removeAll { $0.id == 0xd100 }
++        }
++        if profile == .fuji, let standard = parameters.first(where: { $0.id == 0x500f }),
++           standard.canChange || !parameters.contains(where: { $0.id == 0xd02a && $0.canChange }) {
++            result.removeAll { $0.id == 0xd02a }
++        } else if profile == .fuji, parameters.contains(where: { $0.id == 0xd02a }) {
++            result.removeAll { $0.id == 0x500f }
++        }
++        return result.sorted { $0.kind.rawValue < $1.kind.rawValue }
 +    }
 +
 +    private static func number(_ data: Data, type: UInt16) -> Int64 {
@@ -1056,12 +1272,154 @@ index 10f1bca..02a218f 100644
      }
  }
  
+diff --git a/Features/ConnectionSetup/CameraLiveView.swift b/Features/ConnectionSetup/CameraLiveView.swift
+new file mode 100644
+index 0000000..50c86ec
+--- /dev/null
++++ b/Features/ConnectionSetup/CameraLiveView.swift
+@@ -0,0 +1,136 @@
++import SwiftUI
++import UIKit
++
++// 独立取景页面：画面固定在上方，参数区域滚动时仍可观察画面。
++struct CameraLiveView: View {
++    @ObservedObject var model: CameraRemoteViewModel
++    let cameraName: String
++    @Environment(\.dismiss) private var dismiss
++
++    var body: some View {
++        NavigationView {
++            GeometryReader { geometry in
++                VStack(spacing: 12) {
++                    preview.frame(height: max(120, min(300, geometry.size.height * 0.33)))
++                    HStack(spacing: 16) {
++                        Button(model.isLive ? "停止实时取景" : "开始实时取景") {
++                            if model.isLive { model.stopLive() } else { model.startLive() }
++                        }
++                        .disabled(model.isStoppingLive || (!model.isLive && (model.isBusy || !model.supports(.liveView))))
++                        Spacer(minLength: 4)
++                        Button { model.shutter() } label: { Label("遥控快门", systemImage: "camera.aperture") }
++                            .disabled(model.isBusy || model.isStoppingLive || !model.supports(.capture))
++                    }.font(.subheadline.weight(.semibold)).frame(minHeight: 44)
++                    ScrollView {
++                        VStack(alignment: .leading, spacing: 14) {
++                            Text(model.status).font(.footnote).foregroundColor(AppTheme.inkMuted)
++                            HStack {
++                                Text("核心参数").font(.headline)
++                                Spacer()
++                                if model.isBusy { ProgressView().tint(AppTheme.accentStrong) }
++                                Button("刷新参数") { model.refreshParameters() }
++                                    .disabled(model.isBusy || model.isStoppingLive || !model.supports(.parameters))
++                            }
++                            LazyVGrid(columns: [GridItem(.adaptive(minimum: 105), spacing: 8)], spacing: 8) {
++                                ForEach(CameraParameterKind.core) { kind in
++                                    parameterControl(kind: kind, parameter: model.parameters.first(where: { $0.kind == kind }))
++                                }
++                            }
++                            if !extraParameters.isEmpty {
++                                Text("机型专属参数").font(.headline)
++                                ForEach(extraParameters) { parameter in
++                                    parameterControl(kind: parameter.kind, parameter: parameter)
++                                }
++                            }
++                            Text(model.parameterStatus).font(.footnote).foregroundColor(AppTheme.inkMuted)
++                                .accessibilityIdentifier("live.parameterStatus")
++                            if let updated = model.parameterUpdatedAt {
++                                Text("相机回读时间：\(updated.formatted(date: .omitted, time: .standard))")
++                                    .font(.caption).foregroundColor(AppTheme.inkMuted)
++                            }
++                            Text("可选值与顺序来自相机，设置后回读确认。只读或未开放的参数会标注；调整时画面可能短暂停顿。相机进入自动模式、实体拨盘锁定或镜头不支持时，部分参数不可调。")
++                                .font(.caption).foregroundColor(AppTheme.inkMuted)
++                            if extraParameters.contains(where: { $0.kind == .filmSimulation }) {
++                                Text("富士提示：X-T30 III 的胶片模拟拨盘需设为 C，菜单中的胶片模拟才生效。其他机型请检查对应的拨盘与拍摄模式。")
++                                    .font(.caption).foregroundColor(AppTheme.inkMuted)
++                            }
++                        }.padding(.bottom, 16)
++                    }
++                }.padding(.horizontal, 16).padding(.top, 8)
++            }
++            .foregroundColor(AppTheme.ink).background(AppTheme.canvas.ignoresSafeArea())
++            .navigationTitle("实时取景").navigationBarTitleDisplayMode(.inline)
++            .toolbar {
++                ToolbarItem(placement: .navigationBarLeading) {
++                    Button { model.stopLive(); dismiss() } label: { Label("退出取景", systemImage: "xmark") }
++                }
++                ToolbarItem(placement: .navigationBarTrailing) {
++                    Text(cameraName).font(.caption).foregroundColor(AppTheme.inkMuted).lineLimit(1)
++                }
++            }
++            .alert(item: $model.liveAlert) { alert in
++                Alert(title: Text(alert.title), message: Text(alert.message), dismissButton: .default(Text("确定")))
++            }
++        }
++        .navigationViewStyle(.stack).tint(AppTheme.accentStrong)
++        .onAppear { model.livePageIsPresented = true; model.startLive() }
++        .onDisappear { model.stopLive(); model.livePageIsPresented = false; model.liveAlert = nil }
++    }
++
++    private var extraParameters: [CameraParameter] {
++        model.parameters.filter { !CameraParameterKind.core.contains($0.kind) }
++            .sorted { ($0.kind == .filmSimulation ? 0 : 1) < ($1.kind == .filmSimulation ? 0 : 1) }
++    }
++    private var preview: some View {
++        ZStack {
++            Color.black
++            if let data = model.liveFrame, let image = UIImage(data: data) {
++                Image(uiImage: image).resizable().scaledToFit().accessibilityLabel("相机实时画面")
++            } else {
++                VStack(spacing: 12) {
++                    Image(systemName: "camera.viewfinder").font(.system(size: 40))
++                    Text(model.isBusy ? "正在准备取景…" : "取景已停止").font(.footnote)
++                }.foregroundColor(.white)
++            }
++        }.clipShape(RoundedRectangle(cornerRadius: 12))
++    }
++
++    @ViewBuilder private func parameterControl(kind: CameraParameterKind, parameter: CameraParameter?) -> some View {
++        if let parameter {
++            Menu {
++                ForEach(parameter.choices) { choice in
++                    Button { model.setParameter(parameter.id, choice: choice) } label: {
++                        if choice.data == parameter.current.data { Label(choice.title, systemImage: "checkmark") }
++                        else { Text(choice.title) }
++                    }
++                }
++            } label: {
++                parameterLabel(title: parameter.title, value: parameter.current.title,
++                    detail: parameter.canChange ? "点按调整" : "相机控制 / 只读", editable: parameter.canChange)
++            }
++            .disabled(!parameter.canChange || model.isBusy || model.isStoppingLive)
++            .accessibilityIdentifier("live.parameter.\(kind.rawValue)")
++            .accessibilityHint(parameter.restriction ?? "从相机允许值中选择")
++        } else {
++            parameterLabel(title: kind.title, value: model.parametersLoaded ? "相机未开放" : "尚未读取",
++                detail: "不可调", editable: false)
++                .accessibilityIdentifier("live.parameter.\(kind.rawValue)")
++        }
++    }
++    private func parameterLabel(title: String, value: String, detail: String, editable: Bool) -> some View {
++        VStack(alignment: .leading, spacing: 6) {
++            HStack(spacing: 4) {
++                Text(title).font(.caption).foregroundColor(AppTheme.inkMuted)
++                Spacer(minLength: 0)
++                if editable { Image(systemName: "chevron.down").font(.caption2).foregroundColor(AppTheme.accentStrong) }
++            }
++            Text(value).font(.subheadline.weight(.semibold)).foregroundColor(AppTheme.ink)
++                .lineLimit(2).minimumScaleFactor(0.8).frame(maxWidth: .infinity, alignment: .leading)
++            Text(detail).font(.caption2).foregroundColor(AppTheme.inkMuted)
++        }
++        .padding(10).frame(maxWidth: .infinity, minHeight: 90, alignment: .leading)
++        .background(AppTheme.surface, in: RoundedRectangle(cornerRadius: 12))
++        .overlay(RoundedRectangle(cornerRadius: 12).stroke(AppTheme.border, lineWidth: 1))
++        .contentShape(RoundedRectangle(cornerRadius: 12))
++    }
++}
 diff --git a/Features/ConnectionSetup/CameraRemoteView.swift b/Features/ConnectionSetup/CameraRemoteView.swift
 new file mode 100644
-index 0000000..e714aca
+index 0000000..d313519
 --- /dev/null
 +++ b/Features/ConnectionSetup/CameraRemoteView.swift
-@@ -0,0 +1,98 @@
+@@ -0,0 +1,82 @@
 +import SwiftUI
 +import UIKit
 +
@@ -1069,6 +1427,7 @@ index 0000000..e714aca
 +    @ObservedObject var model: CameraRemoteViewModel
 +    @ObservedObject var connection: ConnectionViewModel
 +    @AppStorage("autoReconnectCamera") private var autoReconnect = true
++    @State private var showLivePage = false
 +
 +    var body: some View {
 +        ScrollView {
@@ -1080,15 +1439,15 @@ index 0000000..e714aca
 +                if model.isRecovering { Button("停止自动重连") { model.stopRecovery() } }
 +                Toggle("断线后自动重连（最多 3 次）", isOn: $autoReconnect)
 +                CustomCard {
-+                    VStack(spacing: 12) {
-+                        if let data = model.liveFrame, let image = UIImage(data: data) {
-+                            Image(uiImage: image).resizable().scaledToFit()
-+                        } else {
-+                            Image(systemName: "camera.viewfinder").font(.system(size: 64)).frame(maxWidth: .infinity, minHeight: 130)
++                    VStack(alignment: .leading, spacing: 14) {
++                        Label("独立实时取景", systemImage: "camera.viewfinder").font(.headline)
++                        Text("在取景画面下方调整快门、光圈、ISO、白平衡与曝光补偿；机型专属参数按相机开放情况显示。")
++                            .font(.footnote).foregroundColor(AppTheme.inkMuted)
++                        Button { showLivePage = true } label: {
++                            Label("进入实时取景", systemImage: "arrow.up.left.and.arrow.down.right")
++                                .font(.headline).frame(maxWidth: .infinity, minHeight: 44)
 +                        }
-+                        Button(model.isLive ? "停止实时取景" : "开始实时取景") {
-+                            if model.isLive { model.stopLive() } else { model.startLive() }
-+                        }.disabled(model.isBusy || (!model.isLive && !model.supports(.liveView)))
++                        .disabled(model.isBusy || !model.supports(.liveView))
 +                        Button { model.shutter() } label: { Label("遥控快门", systemImage: "camera.aperture") }
 +                            .disabled(model.isBusy || !model.supports(.capture))
 +                    }
@@ -1103,29 +1462,12 @@ index 0000000..e714aca
 +                        }.disabled(!model.isWatching && (!model.supports(.watchCapture) || model.isBusy || model.isLive))
 +                    }
 +                }
-+                CustomCard {
-+                    VStack(alignment: .leading, spacing: 14) {
-+                        HStack { Text("相机参数").font(.headline); Spacer(); Button("刷新参数") { model.refreshParameters() }
-+                            .disabled(model.isBusy || !model.supports(.parameters)) }
-+                        ForEach(model.parameters) { parameter in
-+                            HStack {
-+                                Text(parameter.title); Spacer()
-+                                Menu {
-+                                    ForEach(parameter.choices) { choice in
-+                                        Button(choice.title) { model.setParameter(parameter.id, choice: choice) }
-+                                    }
-+                                } label: { Text(parameter.current.title) }
-+                                    .disabled(!parameter.writable || model.isBusy)
-+                            }
-+                        }
-+                        Text("只提供相机报告的允许值；只读、拨盘锁定或当前模式不支持的参数不会允许修改。")
-+                            .font(.caption).foregroundColor(AppTheme.inkMuted)
-+                    }
-+                }
 +            }.padding(20)
 +        }.foregroundColor(AppTheme.ink).background(AppTheme.canvas.ignoresSafeArea())
 +            .navigationTitle("拍摄与连接维护").navigationBarTitleDisplayMode(.inline)
-+            .onDisappear { model.stopLive() }
++            .fullScreenCover(isPresented: $showLivePage) {
++                CameraLiveView(model: model, cameraName: connection.activeSession?.cameraName ?? "相机")
++            }
 +    }
 +}
 +
@@ -1162,10 +1504,10 @@ index 0000000..e714aca
 +}
 diff --git a/Features/ConnectionSetup/CameraRemoteViewModel.swift b/Features/ConnectionSetup/CameraRemoteViewModel.swift
 new file mode 100644
-index 0000000..e2bb867
+index 0000000..e59b218
 --- /dev/null
 +++ b/Features/ConnectionSetup/CameraRemoteViewModel.swift
-@@ -0,0 +1,217 @@
+@@ -0,0 +1,308 @@
 +import Foundation
 +import SwiftUI
 +
@@ -1173,10 +1515,19 @@ index 0000000..e2bb867
 +final class CameraRemoteViewModel: ObservableObject {
 +    @Published var liveFrame: Data?
 +    @Published var isLive = false
++    @Published var isStoppingLive = false
 +    @Published var isWatching = false
 +    @Published var isBusy = false
 +    @Published var isRecovering = false
 +    @Published var parameters: [CameraParameter] = []
++    @Published var parametersLoaded = false
++    @Published var parameterStatus = "进入实时取景后自动读取相机参数。"
++    @Published var parameterUpdatedAt: Date?
++    @Published var liveAlert: AlertContext?
++    var livePageIsPresented = false
++    private var frameInFlight = false
++    private var controlInFlight = false
++    private var autoParameterRefresh = true
 +    @Published var status = "连接相机后可查看可用功能。"
 +    private let connection: ConnectionViewModel
 +    private let gallery: GalleryViewModel
@@ -1197,11 +1548,11 @@ index 0000000..e2bb867
 +    func supports(_ capability: CameraCapability) -> Bool { connection.activeSession?.capabilities.contains(capability) == true }
 +
 +    func startLive() {
-+        guard !isBusy, liveTask == nil, supports(.liveView), let remote, let sessionID = connection.activeSession?.id else { return }
++        guard foreground, !isBusy, !controlInFlight, liveTask == nil, supports(.liveView), let remote, let sessionID = connection.activeSession?.id else { return }
 +        guard !downloads.isDownloading, !gallery.isLoading else {
-+            shell.showAlert(title: "相机正在传输", message: "请等待照片读取结束，并暂停下载后再开始取景。"); return
++            status = "请等待照片读取结束，并暂停下载后再开始取景。"; return
 +        }
-+        stopWatching(); isBusy = true; wantsLive = true
++        stopWatching(); isBusy = true; wantsLive = true; isStoppingLive = false
 +        liveTask = Task { [weak self] in
 +            guard let self else { return }
 +            await self.watchTask?.value
@@ -1209,10 +1560,25 @@ index 0000000..e2bb867
 +                guard self.connection.activeSession?.id == sessionID, self.wantsLive else { throw CancellationError() }
 +                try await remote.startLiveView()
 +                guard self.connection.activeSession?.id == sessionID, self.wantsLive else { throw CancellationError() }
-+                self.isLive = true; self.isBusy = false; self.status = "实时取景中（实验）。"
++                self.isLive = true; self.status = "实时取景中（实验）。"
++                self.autoParameterRefresh = true
++                await self.readParameters(remote, sessionID: sessionID, reportErrors: false)
++                if self.connection.activeSession?.id == sessionID { self.isBusy = false }
++                var lastParameterRead = Date()
 +                var unavailableFrames = 0
 +                while self.wantsLive && self.connection.activeSession?.id == sessionID {
++                    // 参数读写在完整帧之间进行；不取消正在接收的帧，不截断 TCP 数据包。
++                    if self.isBusy { try await Task.sleep(nanoseconds: 30_000_000); continue }
++                    if self.autoParameterRefresh && Date().timeIntervalSince(lastParameterRead) >= 3 {
++                        self.isBusy = true
++                        await self.readParameters(remote, sessionID: sessionID, reportErrors: false)
++                        if self.connection.activeSession?.id == sessionID { self.isBusy = false }
++                        lastParameterRead = Date()
++                        continue
++                    }
 +                    do {
++                        self.frameInFlight = true
++                        defer { self.frameInFlight = false }
 +                        let data = try await remote.liveViewFrame()
 +                        guard self.connection.activeSession?.id == sessionID else { break }
 +                        self.liveFrame = data; unavailableFrames = 0
@@ -1228,49 +1594,115 @@ index 0000000..e2bb867
 +                    self.status = "取景已停止：\(self.shell.userFacingMessage(for: error))"; self.shell.appendLog(self.status)
 +                }
 +            }
++            // 离开页面或点停止时，先等待已经发出的参数事务完整收尾。
++            while self.controlInFlight { try? await Task.sleep(nanoseconds: 20_000_000) }
 +            await remote.stopLiveView()
-+            self.isLive = false; self.isBusy = false; self.liveFrame = nil; self.liveTask = nil; self.wantsLive = false
++            self.isLive = false; self.liveFrame = nil; self.liveTask = nil; self.wantsLive = false
++            self.frameInFlight = false; self.isStoppingLive = false
++            if self.status == "实时取景中（实验）。" || self.status == "正在停止实时取景…" { self.status = "实时取景已停止。" }
++            if self.connection.activeSession?.id == sessionID { self.isBusy = false }
 +        }
 +    }
 +    // 让已经发送的命令完整收尾，避免取消读取而破坏共享 TCP 会话。
-+    func stopLive() { wantsLive = false }
++    func stopLive() {
++        wantsLive = false
++        if liveTask != nil { isStoppingLive = true; status = "正在停止实时取景…" }
++    }
 +    func shutter() {
-+        guard !isBusy, supports(.capture), let remote, let sessionID = connection.activeSession?.id else { return }
-+        isBusy = true
++        guard foreground, !isBusy, !controlInFlight, !isStoppingLive, supports(.capture), let remote, let sessionID = connection.activeSession?.id else { return }
++        isBusy = true; controlInFlight = true
 +        Task {
-+            defer { isBusy = false }
++            defer { controlInFlight = false; isBusy = false }
 +            do {
++                try await waitForFrameBoundary(sessionID)
 +                try await remote.releaseShutter()
 +                guard connection.activeSession?.id == sessionID else { return }
 +                status = "已发送快门指令，请以相机实际拍摄结果为准。"
-+            } catch { if connection.activeSession?.id == sessionID { status = shell.userFacingMessage(for: error); shell.handle(error) } }
++            } catch { if connection.activeSession?.id == sessionID { status = shell.userFacingMessage(for: error); presentControlError(error) } }
++        }
++    }
++    private func presentControlError(_ error: Error) {
++        if livePageIsPresented {
++            let message = shell.userFacingMessage(for: error)
++            shell.appendLog(message); liveAlert = AlertContext(title: "出现问题", message: message)
++        } else { shell.handle(error) }
++    }
++    private func waitForFrameBoundary(_ sessionID: UUID) async throws {
++        while frameInFlight {
++            guard foreground, connection.activeSession?.id == sessionID else { throw CancellationError() }
++            try await Task.sleep(nanoseconds: 20_000_000)
++        }
++        guard foreground, connection.activeSession?.id == sessionID else { throw CancellationError() }
++    }
++    private func acceptParameters(_ result: [CameraParameter]) {
++        parameters = result; parametersLoaded = true; parameterUpdatedAt = Date()
++        parameterStatus = result.isEmpty ? "相机未开放参数，请检查连接模式和拍摄模式。" : "已读取相机当前值；取景时约每 3 秒同步。"
++    }
++    private func readParameters(_ remote: any CameraRemoteControlling, sessionID: UUID, reportErrors: Bool) async {
++        guard supports(.parameters) else { parameterStatus = "当前连接协议未开放相机参数。"; return }
++        do {
++            let result = try await remote.cameraParameters()
++            guard connection.activeSession?.id == sessionID else { return }
++            acceptParameters(result)
++        } catch {
++            guard connection.activeSession?.id == sessionID else { return }
++            // 错误后停止轮询，保留取景连接；由用户刷新重试，避免持续占用相机。
++            autoParameterRefresh = false
++            parameterStatus = "参数同步失败，显示值可能已过期。请刷新重试。"
++            shell.appendLog("相机参数读取失败：\(shell.userFacingMessage(for: error))")
++            if reportErrors { presentControlError(error) }
 +        }
 +    }
 +    func refreshParameters() {
-+        guard !isBusy, supports(.parameters), let remote, let sessionID = connection.activeSession?.id else { return }
-+        isBusy = true
++        guard foreground, !isBusy, !controlInFlight, !isStoppingLive, supports(.parameters), let remote, let sessionID = connection.activeSession?.id else { return }
++        guard !downloads.isDownloading, !gallery.isLoading else {
++            parameterStatus = "请等待照片读取或下载结束后再刷新参数。"; return
++        }
++        isBusy = true; controlInFlight = true; autoParameterRefresh = true
 +        Task {
-+            defer { isBusy = false }
-+            do {
-+                let result = try await remote.cameraParameters()
-+                guard connection.activeSession?.id == sessionID else { return }
-+                parameters = result
-+                if parameters.isEmpty { status = "相机当前未公布可用参数，请检查拍摄模式和连接模式。" }
-+            } catch { if connection.activeSession?.id == sessionID { status = shell.userFacingMessage(for: error); shell.handle(error) } }
++            defer { controlInFlight = false; isBusy = false }
++            do { try await waitForFrameBoundary(sessionID) } catch { return }
++            await readParameters(remote, sessionID: sessionID, reportErrors: true)
 +        }
 +    }
 +    func setParameter(_ parameter: UInt16, choice: CameraParameterChoice) {
-+        guard !isBusy, let remote, let sessionID = connection.activeSession?.id else { return }
-+        isBusy = true
++        guard foreground, !isBusy, !controlInFlight, !isStoppingLive, let remote, let sessionID = connection.activeSession?.id,
++              let current = parameters.first(where: { $0.id == parameter }), current.canChange,
++              current.choices.contains(where: { $0.data == choice.data }) else { return }
++        guard !downloads.isDownloading, !gallery.isLoading else {
++            parameterStatus = "请等待照片读取或下载结束后再调整参数。"; return
++        }
++        if current.current.data == choice.data { return }
++        isBusy = true; controlInFlight = true; parameterStatus = "正在设置\(current.title)，等待相机确认…"
 +        Task {
-+            defer { isBusy = false }
++            defer { controlInFlight = false; isBusy = false }
 +            do {
++                try await waitForFrameBoundary(sessionID)
 +                try await remote.setCameraParameter(parameter, to: choice)
++                // 某些相机确认响应早于属性更新，最多回读三次；不自动重复写入。
++                for attempt in 0..<3 {
++                    guard foreground, connection.activeSession?.id == sessionID else { return }
++                    if attempt > 0 { try await Task.sleep(nanoseconds: 250_000_000) }
++                    let result = try await remote.cameraParameters()
++                    guard connection.activeSession?.id == sessionID else { return }
++                    acceptParameters(result)
++                    if let actual = result.first(where: { $0.id == parameter }), actual.current.data == choice.data {
++                        parameterStatus = "相机已确认：\(actual.title) · \(actual.current.title)"
++                        return
++                    }
++                }
++                parameterStatus = "相机回读值与选择不同，已显示实际返回值。请检查拍摄模式、拨盘或相机锁定状态。"
++                shell.appendLog(parameterStatus)
++            } catch {
 +                guard connection.activeSession?.id == sessionID else { return }
-+                let result = try await remote.cameraParameters()
++                // 写入失败也回读实际状态，不在界面假定设置成功。
++                if let result = try? await remote.cameraParameters(), connection.activeSession?.id == sessionID {
++                    acceptParameters(result)
++                }
 +                guard connection.activeSession?.id == sessionID else { return }
-+                parameters = result; status = "参数已重新读取，请核对相机显示。"
-+            } catch { if connection.activeSession?.id == sessionID { status = shell.userFacingMessage(for: error); shell.handle(error) } }
++                parameterStatus = "设置未确认：\(shell.userFacingMessage(for: error))"
++                presentControlError(error)
++            }
 +        }
 +    }
 +    func startWatching() {
@@ -1313,7 +1745,8 @@ index 0000000..e2bb867
 +    }
 +    func sessionChanged() {
 +        guard !isRecovering else { return }
-+        stopWatching(); stopLive(); parameters = []; monitorID = nil
++        stopWatching(); stopLive(); parameters = []; parametersLoaded = false; parameterUpdatedAt = nil
++        parameterStatus = "进入实时取景后自动读取相机参数。"; isBusy = controlInFlight; monitorID = nil
 +        if connection.activeSession != nil && foreground { startHealthMonitor() }
 +        else { status = "相机已断开。" }
 +    }
@@ -2600,10 +3033,10 @@ index 2e36032..3f10e9f 100644
  	<key>UISupportedInterfaceOrientations</key>
 diff --git a/Resources/ThirdPartyNotices.txt b/Resources/ThirdPartyNotices.txt
 new file mode 100644
-index 0000000..33e8bee
+index 0000000..33a8ac1
 --- /dev/null
 +++ b/Resources/ThirdPartyNotices.txt
-@@ -0,0 +1,691 @@
+@@ -0,0 +1,719 @@
 +Nikon Connect 0.2.0 实验扩展与开源说明
 +
 +新增通道是 Swift 改写实现，未经相机真机验证，不代表任何厂商背书或所有机型支持。
@@ -3295,6 +3728,34 @@ index 0000000..33e8bee
 +LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 +OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 +SOFTWARE.
++
++
++协议编码与相机拨盘行为研究参考：mikefsq/ptp
++https://github.com/mikefsq/ptp
++参考提交：0fe3c68516f8c0fe89c963437bbc385d68620b25
++未将此库作为运行依赖；以下保留其许可。
++
++MIT License
++
++Copyright (c) 2026 mikefsq
++
++Permission is hereby granted, free of charge, to any person obtaining a copy
++of this software and associated documentation files (the "Software"), to deal
++in the Software without restriction, including without limitation the rights
++to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
++copies of the Software, and to permit persons to whom the Software is
++furnished to do so, subject to the following conditions:
++
++The above copyright notice and this permission notice shall be included in all
++copies or substantial portions of the Software.
++
++THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
++IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
++FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
++AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
++LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
++OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
++SOFTWARE.
 diff --git a/Services/AssetThumbnailService.swift b/Services/AssetThumbnailService.swift
 index b0e0ec8..b90f89d 100644
 --- a/Services/AssetThumbnailService.swift
@@ -3855,10 +4316,10 @@ index 0000000..edcaa41
 +}
 diff --git a/Services/ExperimentalFujiTransport.swift b/Services/ExperimentalFujiTransport.swift
 new file mode 100644
-index 0000000..4726d63
+index 0000000..2f80269
 --- /dev/null
 +++ b/Services/ExperimentalFujiTransport.swift
-@@ -0,0 +1,309 @@
+@@ -0,0 +1,311 @@
 +// 富士无线协议参考 libfuji（MIT），网络、状态和 Swift 接口由本项目实现。
 +import Foundation
 +
@@ -4111,7 +4572,7 @@ index 0000000..4726d63
 +        try await FujiBluetoothController.shared.releaseShutter()
 +    }
 +    func cameraParameters() async throws -> [CameraParameter] {
-+        let definitions = CameraParameterDecoder.definitions + [(0xd02a, "ISO 感光度（富士）")]
++        let definitions = CameraParameterDecoder.fujiDefinitions
 +        var result: [CameraParameter] = []
 +        // 富士 0x902b 返回带长度前缀的一组 PTP 属性描述。
 +        let bulk = try await transaction(0x902b)
@@ -4123,15 +4584,17 @@ index 0000000..4726d63
 +            let body = try r.readData(count: length - 4)
 +            var descriptor = PTPDataReader(data: body); let code = try descriptor.readUInt16()
 +            if let title = definitions.first(where: { $0.0 == code })?.1,
-+               let parameter = try? CameraParameterDecoder.decode(body, code: code, title: title, vendorValues: code == 0x500d || code == 0xd02a) { result.append(parameter) }
++               let parameter = try? CameraParameterDecoder.decode(body, code: code, title: title, profile: .fuji) { result.append(parameter) }
 +        }
-+        return result
++        return CameraParameterDecoder.preferred(result, profile: .fuji)
 +    }
 +    func setCameraParameter(_ parameter: UInt16, to choice: CameraParameterChoice) async throws {
 +        let parameters = try await cameraParameters()
-+        guard let current = parameters.first(where: { $0.id == parameter }), current.writable, current.choices.contains(choice) else {
++        guard let current = parameters.first(where: { $0.id == parameter }), current.canChange,
++              current.choices.contains(where: { $0.data == choice.data }) else {
 +            throw CameraAppError.unsupportedOperation("富士相机当前模式不允许设置该参数。")
 +        }
++        if current.current.data == choice.data { return }
 +        _ = try await transaction(0x1016, parameters: [UInt32(parameter)], output: choice.data)
 +    }
 +    func beginCaptureWatch() async { watchEnabled = true; watchBaseline = nil; watchCount = nil; watchEdgeKeys = []; watchPoll = 0 }
@@ -4940,10 +5403,10 @@ index 8524ba9..99dbac7 100644
  
 diff --git a/Services/PTPIPSession+RemoteControl.swift b/Services/PTPIPSession+RemoteControl.swift
 new file mode 100644
-index 0000000..d6be6d6
+index 0000000..918df59
 --- /dev/null
 +++ b/Services/PTPIPSession+RemoteControl.swift
-@@ -0,0 +1,125 @@
+@@ -0,0 +1,126 @@
 +import Foundation
 +
 +extension PTPIPSession {
@@ -5040,25 +5503,26 @@ index 0000000..d6be6d6
 +    func cameraParameters() async throws -> [CameraParameter] {
 +        guard let session else { throw CameraAppError.notConnected }
 +        var result: [CameraParameter] = []
-+        for (code, title) in CameraParameterDecoder.definitions {
++        for (code, title) in CameraParameterDecoder.nikonDefinitions {
 +            do {
 +                let data = try await session.remoteData(.getDevicePropDesc, parameters: [UInt32(code)])
-+                result.append(try CameraParameterDecoder.decode(data, code: code, title: title))
++                result.append(try CameraParameterDecoder.decode(data, code: code, title: title, profile: .nikon))
 +            } catch let error as PTPIPError {
-+                if case .unexpectedResponse = error { continue }
++                if case .unexpectedResponse(let code) = error, [0x2005, 0x200a].contains(code) { continue }
 +                throw error
-+            }
++            } catch CameraAppError.unsupportedOperation(_) { continue }
 +        }
-+        return result
++        return CameraParameterDecoder.preferred(result, profile: .nikon)
 +    }
 +
 +    func setCameraParameter(_ parameter: UInt16, to choice: CameraParameterChoice) async throws {
 +        guard let session else { throw CameraAppError.notConnected }
 +        let available = try await cameraParameters()
-+        guard let current = available.first(where: { $0.id == parameter }), current.writable,
-+              current.choices.contains(choice) else {
++        guard let current = available.first(where: { $0.id == parameter }), current.canChange,
++              current.choices.contains(where: { $0.data == choice.data }) else {
 +            throw CameraAppError.unsupportedOperation("相机当前模式不允许设置这个值，请刷新参数。")
 +        }
++        if current.current.data == choice.data { return }
 +        try await session.setRemoteProperty(parameter, data: choice.data)
 +    }
 +
