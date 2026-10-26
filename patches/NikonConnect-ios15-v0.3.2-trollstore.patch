@@ -5142,10 +5142,10 @@ index 2e36032..f6be96b 100644
  		<string>UIInterfaceOrientationPortrait</string>
 diff --git a/Resources/ThirdPartyNotices.txt b/Resources/ThirdPartyNotices.txt
 new file mode 100644
-index 0000000..466b701
+index 0000000..abf0ffc
 --- /dev/null
 +++ b/Resources/ThirdPartyNotices.txt
-@@ -0,0 +1,775 @@
+@@ -0,0 +1,783 @@
 +Nikon Connect 0.2.0 实验扩展与开源说明
 +
 +新增通道是 Swift 改写实现，未经相机真机验证，不代表任何厂商背书或所有机型支持。
@@ -5921,15 +5921,29 @@ index 0000000..466b701
 +SOFTWARE.
 +
 +其余协议研究仅使用公开接口编号、字段和报文格式，Swift 实现独立编写；未引入其应用代码、闭源库或厂商二进制。
++
++巨魔专用 Wi-Fi 接口研究资料（仅用于确认 C 接口和权限声明，桥接器独立编写）：
++opa334/TrollStore: https://github.com/opa334/TrollStore
++qpiu/wifiutil: https://github.com/qpiu/wifiutil
++固定提交：74e556540cadf78aa75899dc57c0b8061ed2ced5
++ProcursusTeam/netctl: https://github.com/ProcursusTeam/netctl
++固定提交：3db04194c08fe93b723bc3da82cca80ae0d7ffa7
++未复制其应用代码或完整头文件，不包含它们的二进制程序。
 diff --git a/Resources/TrollStore.entitlements b/Resources/TrollStore.entitlements
 new file mode 100644
-index 0000000..1cc91f1
+index 0000000..c65b70d
 --- /dev/null
 +++ b/Resources/TrollStore.entitlements
-@@ -0,0 +1,6 @@
+@@ -0,0 +1,12 @@
 +<?xml version="1.0" encoding="UTF-8"?>
 +<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 +<plist version="1.0"><dict>
++<key>application-identifier</key><string>TROLLTROLL.com.yaoyihan.NikonConnectIOS</string>
++<key>com.apple.developer.team-identifier</key><string>TROLLTROLL</string>
++<key>keychain-access-groups</key><array>
++<string>TROLLTROLL.com.yaoyihan.NikonConnectIOS</string>
++<string>TROLLTROLL.*</string>
++</array>
 +<key>com.apple.wifi.manager-access</key><true/>
 +<key>com.apple.developer.networking.HotspotConfiguration</key><true/>
 +</dict></plist>
@@ -9661,10 +9675,10 @@ index 0000000..e79fea4
 +}
 diff --git a/Services/TrollStoreWiFi.swift b/Services/TrollStoreWiFi.swift
 new file mode 100644
-index 0000000..1942041
+index 0000000..a9b07e8
 --- /dev/null
 +++ b/Services/TrollStoreWiFi.swift
-@@ -0,0 +1,199 @@
+@@ -0,0 +1,202 @@
 +#if TROLLSTORE
 +import Foundation
 +import CryptoKit
@@ -9827,9 +9841,12 @@ index 0000000..1942041
 +        status = "已直接加入 \(ssid)，尚需相机协议握手确认。"
 +    }
 +    private func awaitNetwork(ssid:String,bssid:String?) async throws {
++        var stableSamples = 0
 +        for _ in 0..<40 {
 +            try Task.checkCancellation()
-+            if bridge.currentSSID() == ssid, bssid == nil || bridge.currentBSSID() == bssid, Self.hasWiFiAddress() { return }
++            if bridge.currentSSID() == ssid, bssid == nil || bridge.currentBSSID() == bssid, Self.hasWiFiAddress() {
++                stableSamples += 1; if stableSamples >= 5 { return }
++            } else { stableSamples = 0 }
 +            try await Task.sleep(nanoseconds:250_000_000)
 +        }
 +        throw failure("无线请求已结束，但目标热点或本机 IP 未确认。不会把这次请求当作相机连接成功，请重试。")
