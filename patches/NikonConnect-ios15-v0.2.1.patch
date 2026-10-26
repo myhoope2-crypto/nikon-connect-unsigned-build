@@ -270,7 +270,7 @@ index a305814..ef4880c 100644
              .onChange(of: scenePhase) { newPhase in
                  downloadViewModel.handleScenePhaseChange(newPhase)
 diff --git a/App/RootTabView.swift b/App/RootTabView.swift
-index 11f0022..baf1163 100644
+index 11f0022..60a4717 100644
 --- a/App/RootTabView.swift
 +++ b/App/RootTabView.swift
 @@ -4,6 +4,8 @@ import UIKit
@@ -389,7 +389,17 @@ index 11f0022..baf1163 100644
          #else
          self
          #endif
-@@ -119,5 +155,14 @@ private func configureTabBarAppearance() {
+@@ -116,8 +152,24 @@ private func configureTabBarAppearance() {
+     appearance.configureWithOpaqueBackground()
+     appearance.backgroundColor = UIColor(AppTheme.surface)
+     appearance.shadowColor = UIColor(AppTheme.separator)
++    // 新版 UIKit 优先使用各布局的外观配置，单设 unselectedItemTintColor 仍可能落回低对比度灰色。
++    for layout in [appearance.stackedLayoutAppearance, appearance.inlineLayoutAppearance, appearance.compactInlineLayoutAppearance] {
++        layout.normal.iconColor = UIColor(AppTheme.inkMuted)
++        layout.normal.titleTextAttributes = [.foregroundColor: UIColor(AppTheme.inkMuted)]
++        layout.selected.iconColor = UIColor(AppTheme.accentStrong)
++        layout.selected.titleTextAttributes = [.foregroundColor: UIColor(AppTheme.accentStrong)]
++    }
      UITabBar.appearance().standardAppearance = appearance
      UITabBar.appearance().scrollEdgeAppearance = appearance
      UITabBar.appearance().unselectedItemTintColor = UIColor(AppTheme.inkMuted)
