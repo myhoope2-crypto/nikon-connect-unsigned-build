@@ -117,7 +117,7 @@ jobs:
           # 嵌入巨魔所需的自定义权限，仅本地临时签名，不需要开发者证书。
           /usr/bin/codesign --force --sign - --entitlements "$GITHUB_WORKSPACE/source/Resources/TrollStore.entitlements" --generate-entitlement-der --timestamp=none "$app"
           /usr/bin/codesign --verify --strict "$app"
-          /usr/bin/codesign --display --entitlements - "$app" > "$GITHUB_WORKSPACE/result/NikonConnect-v0.3.2-trollstore-embedded-entitlements.plist"
+          /usr/bin/codesign --display --entitlements - --xml "$app" | /usr/bin/plutil -convert xml1 -o - - > "$GITHUB_WORKSPACE/result/NikonConnect-v0.3.2-trollstore-embedded-entitlements.plist"
           test "$(/usr/libexec/PlistBuddy -c 'Print :com.apple.wifi.manager-access' "$GITHUB_WORKSPACE/result/NikonConnect-v0.3.2-trollstore-embedded-entitlements.plist")" = 'true'
           test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleDisplayName' "$app/Info.plist")" = 'Nikon Connect 巨魔' 
           mkdir -p "$RUNNER_TEMP/NikonConnectIOS15IPA/Payload"
