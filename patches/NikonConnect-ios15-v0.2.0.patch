@@ -649,10 +649,10 @@ index 0000000..fc66196
 +}
 diff --git a/Features/ConnectionSetup/CameraRemoteViewModel.swift b/Features/ConnectionSetup/CameraRemoteViewModel.swift
 new file mode 100644
-index 0000000..db1588e
+index 0000000..798f6cd
 --- /dev/null
 +++ b/Features/ConnectionSetup/CameraRemoteViewModel.swift
-@@ -0,0 +1,215 @@
+@@ -0,0 +1,217 @@
 +import Foundation
 +import SwiftUI
 +
@@ -844,8 +844,10 @@ index 0000000..db1588e
 +        defer { isRecovering = false }
 +        stopWatching(); stopLive()
 +        downloads.interruptActiveDownload(reason: "相机连接中断，等待重新连接。")
-+        connection.disconnect(); gallery.resetForDisconnectedSession()
 +        let stopCounter = connection.userStopCounter
++        await connection.disconnectForRecovery()
++        gallery.resetForDisconnectedSession()
++        guard monitorID == monitor, foreground, connection.userStopCounter == stopCounter else { return }
 +        let autoReconnect = UserDefaults.standard.object(forKey: "autoReconnectCamera") as? Bool ?? true
 +        guard autoReconnect else { status = "检测到连接已断开，请手动重连。"; return }
 +        for attempt in 1...3 {
@@ -1027,7 +1029,7 @@ index f4cd403..42cd68e 100644
      }
  }
 diff --git a/Features/ConnectionSetup/ConnectionViewModel.swift b/Features/ConnectionSetup/ConnectionViewModel.swift
-index f3c3fdb..64e5c5d 100644
+index f3c3fdb..0a05836 100644
 --- a/Features/ConnectionSetup/ConnectionViewModel.swift
 +++ b/Features/ConnectionSetup/ConnectionViewModel.swift
 @@ -10,15 +10,18 @@ final class ConnectionViewModel: ObservableObject {
@@ -1074,7 +1076,7 @@ index f3c3fdb..64e5c5d 100644
      }
  
      func bootstrapIfNeeded() async {
-@@ -72,22 +72,69 @@ final class ConnectionViewModel: ObservableObject {
+@@ -72,22 +72,70 @@ final class ConnectionViewModel: ObservableObject {
      }
  
      @discardableResult
@@ -1083,6 +1085,7 @@ index f3c3fdb..64e5c5d 100644
 +    func connect(quietly: Bool = false) async -> Bool {
 +        guard connectionTask == nil, !isWorking else { return false }
 +
++        if !quietly { userStopCounter += 1 }
 +        let attemptID = UUID()
 +        activeConnectionAttemptID = attemptID
 +        isWorking = true
@@ -1150,7 +1153,7 @@ index f3c3fdb..64e5c5d 100644
  
              sessionCoordinator.setActiveSession(session, transport: transport)
              activeSession = session
-@@ -95,21 +142,34 @@ final class ConnectionViewModel: ObservableObject {
+@@ -95,21 +143,34 @@ final class ConnectionViewModel: ObservableObject {
              lastSummary = "已连接到\(session.cameraName)（\(session.connectedHost):\(session.port)）"
              shell.appendLog(lastSummary)
              await appendTransportDiagnostics(from: transport)
@@ -1191,10 +1194,18 @@ index f3c3fdb..64e5c5d 100644
          Haptics.impact(.medium)
          let transport = sessionCoordinator.clearSession()
          activeSession = nil
-@@ -127,13 +187,24 @@ final class ConnectionViewModel: ObservableObject {
+@@ -127,13 +188,32 @@ final class ConnectionViewModel: ObservableObject {
          }
      }
  
++    func disconnectForRecovery() async {
++        let transport = sessionCoordinator.clearSession()
++        activeSession = nil; workflowState = .waitingForWifi
++        lastSummary = "连接已中断，正在清理旧会话。"
++        await thumbnailService.clear()
++        await transport?.disconnect()
++    }
++
 +    func setTransportMode(_ mode: CameraTransportMode) {
 +        guard activeSession == nil, !isWorking else { return }
 +        userStopCounter += 1
@@ -1218,7 +1229,7 @@ index f3c3fdb..64e5c5d 100644
          let config = CameraConnectionConfig(
              host: host,
              port: port,
-@@ -150,10 +221,10 @@ final class ConnectionViewModel: ObservableObject {
+@@ -150,10 +230,10 @@ final class ConnectionViewModel: ObservableObject {
      }
  
      private func persistConfiguration() {
@@ -1231,7 +1242,7 @@ index f3c3fdb..64e5c5d 100644
              transportMode: transportMode,
              autoExportToPhotoLibrary: autoExportToPhotoLibrary,
              prioritizeJPEGDownloads: prioritizeJPEGDownloads
-@@ -163,6 +234,8 @@ final class ConnectionViewModel: ObservableObject {
+@@ -163,6 +243,8 @@ final class ConnectionViewModel: ObservableObject {
      }
  
      private func handle(_ error: Error) {
@@ -1241,18 +1252,19 @@ index f3c3fdb..64e5c5d 100644
          lastSummary = shell.handle(error)
      }
 diff --git a/Features/Downloads/DownloadManagerViewModel.swift b/Features/Downloads/DownloadManagerViewModel.swift
-index ed0c071..2cea9ff 100644
+index ed0c071..9b9c70d 100644
 --- a/Features/Downloads/DownloadManagerViewModel.swift
 +++ b/Features/Downloads/DownloadManagerViewModel.swift
-@@ -32,6 +32,7 @@ final class DownloadManagerViewModel: ObservableObject {
+@@ -32,6 +32,8 @@ final class DownloadManagerViewModel: ObservableObject {
      private let liveActivityController: DownloadLiveActivityController
      private let throughputDiagnosticsRecorder = DownloadThroughputDiagnosticsRecorder()
  
 +    private var isEnqueuing = false
++    private var isStartingQueue = false
      private var queueState = DownloadQueueState()
      private var queueID = UUID()
      private var queueRunnerTask: Task<Void, Never>?
-@@ -126,9 +127,27 @@ final class DownloadManagerViewModel: ObservableObject {
+@@ -126,9 +128,27 @@ final class DownloadManagerViewModel: ObservableObject {
          }
  
          guard !assets.isEmpty else { return true }
@@ -1282,7 +1294,27 @@ index ed0c071..2cea9ff 100644
              prioritizeJPEGDownloads: prioritizeJPEGDownloads
          )
          let didReorder = orderedAssets.map(\.id) != assets.map(\.id)
-@@ -386,6 +405,13 @@ final class DownloadManagerViewModel: ObservableObject {
+@@ -166,7 +186,9 @@ final class DownloadManagerViewModel: ObservableObject {
+     }
+ 
+     func startQueueIfPossible() async {
+-        guard queueRunnerTask == nil else { return }
++        guard queueRunnerTask == nil, !isStartingQueue else { return }
++        isStartingQueue = true
++        defer { isStartingQueue = false }
+         guard queueState.jobs.contains(where: { $0.status.canResume }) else {
+             queueState.status = .idle
+             queueState.activeJobID = nil
+@@ -373,7 +395,7 @@ final class DownloadManagerViewModel: ObservableObject {
+                 updateJob(job.id) { queuedJob in
+                     queuedJob.status = .interrupted
+                     queuedJob.updatedAt = Date()
+-                    queuedJob.errorMessage = "请重新连接 Nikon 相机后继续下载。"
++                    queuedJob.errorMessage = "请重新连接相机后继续下载。"
+                 }
+                 queueState.activeJobID = nil
+                 queueState.status = .interrupted
+@@ -386,10 +408,19 @@ final class DownloadManagerViewModel: ObservableObject {
                  return
              }
  
@@ -1296,7 +1328,13 @@ index ed0c071..2cea9ff 100644
              let itemNumber = (queueState.jobs.firstIndex(where: { $0.id == job.id }) ?? 0) + 1
              let totalItemCount = queueState.jobs.count
              updateJob(job.id) { queuedJob in
-@@ -445,7 +471,10 @@ final class DownloadManagerViewModel: ObservableObject {
+                 queuedJob.status = .running
++                queuedJob.bytesTransferred = 0
++                queuedJob.currentOffset = 0
+                 queuedJob.startedAt = queuedJob.startedAt ?? Date()
+                 queuedJob.updatedAt = Date()
+                 queuedJob.errorMessage = nil
+@@ -445,7 +476,10 @@ final class DownloadManagerViewModel: ObservableObject {
                  currentTemporaryURL = temporaryURL
  
                  let measuredSize = Self.fileSize(at: temporaryURL)
@@ -1308,7 +1346,7 @@ index ed0c071..2cea9ff 100644
                  finalizeProgress(forJobID: job.id, finalSize: finalSize)
  
                  var record = try await downloadStore.storeDownloadedFile(at: temporaryURL, from: job.asset)
-@@ -579,7 +608,7 @@ final class DownloadManagerViewModel: ObservableObject {
+@@ -579,7 +613,7 @@ final class DownloadManagerViewModel: ObservableObject {
          }
      }
  
@@ -1317,7 +1355,7 @@ index ed0c071..2cea9ff 100644
          guard let activeJobID = queueState.activeJobID else { return }
          queueStopReason = .interrupted(reason)
          updateJob(activeJobID) { job in
-@@ -593,7 +622,9 @@ final class DownloadManagerViewModel: ObservableObject {
+@@ -593,7 +627,9 @@ final class DownloadManagerViewModel: ObservableObject {
      }
  
      private func applyProgress(_ transportProgress: DownloadTransferProgress, toJobID jobID: UUID) {
@@ -2434,7 +2472,7 @@ index 0000000..33e8bee
 +OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 +SOFTWARE.
 diff --git a/Services/AssetThumbnailService.swift b/Services/AssetThumbnailService.swift
-index b0e0ec8..a5ea968 100644
+index b0e0ec8..20a447f 100644
 --- a/Services/AssetThumbnailService.swift
 +++ b/Services/AssetThumbnailService.swift
 @@ -55,6 +55,7 @@ actor AssetThumbnailService {
@@ -2480,16 +2518,28 @@ index b0e0ec8..a5ea968 100644
              cachedPreviewData[cacheKey] = data
          }
      }
-@@ -259,6 +265,8 @@ actor AssetThumbnailService {
+@@ -258,7 +264,9 @@ actor AssetThumbnailService {
+     }
  
      private static func cacheKey(for asset: PhotoAsset) -> String {
-         let rawKey = [
+-        let rawKey = [
++        let rawFields: [String] = [
 +            asset.sourceScope ?? "unknown",
 +            asset.directoryIdentifier ?? "unknown",
              asset.remoteIdentifier,
              asset.fileName,
              String(asset.byteSize),
-@@ -278,49 +286,17 @@ actor AssetThumbnailService {
+@@ -267,7 +275,8 @@ actor AssetThumbnailService {
+             String(asset.thumbnailInfo?.byteSize ?? 0),
+             String(asset.thumbnailInfo?.pixelWidth ?? 0),
+             String(asset.thumbnailInfo?.pixelHeight ?? 0)
+-        ].joined(separator: "|")
++        ]
++        let rawKey = rawFields.joined(separator: "|")
+         let digest = SHA256.hash(data: Data(rawKey.utf8))
+         return digest.map { String(format: "%02x", $0) }.joined()
+     }
+@@ -278,49 +287,17 @@ actor AssetThumbnailService {
          using transport: any CameraTransport,
          session: CameraSession
      ) async -> Data? {
@@ -2503,9 +2553,8 @@ index b0e0ec8..a5ea968 100644
                 session: session
 -           ) {
 -            return cameraThumbnail
-+           )
-         }
- 
+-        }
+-
 -        switch asset.kind {
 -        case .raw:
 -            if let rendered = await fileBackedDerivativeData(
@@ -2529,8 +2578,9 @@ index b0e0ec8..a5ea968 100644
 -
 -        case .jpeg, .png:
 -            break
--        }
--
++           )
+         }
+ 
 -        if let originalData = try? await transport.downloadAsset(asset, from: session),
 -           let preview = makeDerivativeData(
 -               from: originalData,
@@ -2546,10 +2596,10 @@ index b0e0ec8..a5ea968 100644
          return await cameraThumbnailData(
 diff --git a/Services/CameraHTTPClient.swift b/Services/CameraHTTPClient.swift
 new file mode 100644
-index 0000000..34a3350
+index 0000000..d6a32a5
 --- /dev/null
 +++ b/Services/CameraHTTPClient.swift
-@@ -0,0 +1,125 @@
+@@ -0,0 +1,139 @@
 +import Foundation
 +
 +enum CameraJSON: Codable, Sendable {
@@ -2611,15 +2661,22 @@ index 0000000..34a3350
 +    func json(_ reference: String, method: String = "GET", body: CameraJSON? = nil, query: String? = nil) async throws -> CameraJSON {
 +        var request = URLRequest(url: try url(reference, query: query)); request.httpMethod = method
 +        if let body { request.httpBody = try JSONEncoder().encode(body); request.setValue("application/json", forHTTPHeaderField: "Content-Type") }
-+        let (data, response) = try await session.data(for: request)
-+        try validate(response)
-+        guard data.count <= 8 * 1024 * 1024 else { throw CameraAppError.unsupportedOperation("相机列表响应过大。") }
++        let data = try await boundedData(request)
 +        return try JSONDecoder().decode(CameraJSON.self, from: data)
 +    }
 +    func thumbnail(_ reference: String, query: String) async throws -> Data {
-+        let (data, response) = try await session.data(from: url(reference, query: query))
-+        try validate(response)
++        let data = try await boundedData(URLRequest(url: url(reference, query: query)))
 +        guard !data.isEmpty, data.count <= 8 * 1024 * 1024 else { throw PTPIPError.malformedPayload("缩略图大小无效") }
++        return data
++    }
++    private func boundedData(_ request: URLRequest) async throws -> Data {
++        let (bytes, response) = try await session.bytes(for: request)
++        try validate(response)
++        var data = Data()
++        for try await byte in bytes {
++            guard data.count < 8 * 1024 * 1024 else { throw PTPIPError.malformedPayload("相机列表或缩略图超过大小限制") }
++            data.append(byte)
++        }
 +        return data
 +    }
 +    func download(_ reference: String, expectedSize: Int64,
@@ -2665,6 +2722,13 @@ index 0000000..34a3350
 +    let progress: (@Sendable (DownloadTransferProgress) async -> Void)?
 +    init(expectedSize: Int64, progress: (@Sendable (DownloadTransferProgress) async -> Void)?) {
 +        self.expectedSize = expectedSize; self.progress = progress
++    }
++    func urlSession(_ session: URLSession, task: URLSessionTask, willPerformHTTPRedirection response: HTTPURLResponse,
++        newRequest request: URLRequest, completionHandler: @escaping @Sendable (URLRequest?) -> Void) {
++        let origin = task.originalRequest?.url
++        let allowed = request.url?.host == origin?.host && request.url?.port == origin?.port
++            && request.url?.scheme == origin?.scheme && request.url?.user == nil && request.url?.password == nil
++        completionHandler(allowed ? request : nil)
 +    }
 +    func urlSession(_ session: URLSession, downloadTask: URLSessionDownloadTask, didFinishDownloadingTo location: URL) {}
 +    func urlSession(_ session: URLSession, downloadTask: URLSessionDownloadTask, didWriteData bytesWritten: Int64,
@@ -2769,7 +2833,7 @@ index 0f6e21b..be7d0f6 100644
  private extension DownloadLiveActivityState {
      var activityContentState: DownloadActivityAttributes.ContentState {
 diff --git a/Services/DownloadStore.swift b/Services/DownloadStore.swift
-index 12cf12b..9a833ca 100644
+index 12cf12b..881ac03 100644
 --- a/Services/DownloadStore.swift
 +++ b/Services/DownloadStore.swift
 @@ -43,7 +43,8 @@ actor DownloadStore {
@@ -2792,15 +2856,36 @@ index 12cf12b..9a833ca 100644
          )
  
          var manifest = try loadManifest()
-@@ -200,7 +202,15 @@ actor DownloadStore {
+@@ -179,9 +181,11 @@ actor DownloadStore {
+     }
+ 
+     private func uniqueDestinationURL(in directory: URL, fileName: String) -> URL {
+-        let baseName = URL(fileURLWithPath: fileName).deletingPathExtension().lastPathComponent
+-        let ext = URL(fileURLWithPath: fileName).pathExtension
+-        var candidate = directory.appendingPathComponent(fileName)
++        let safeName = URL(fileURLWithPath: fileName).lastPathComponent
++        let resolvedName = safeName.isEmpty || safeName == "." || safeName == ".." ? UUID().uuidString : safeName
++        let baseName = URL(fileURLWithPath: resolvedName).deletingPathExtension().lastPathComponent
++        let ext = URL(fileURLWithPath: resolvedName).pathExtension
++        var candidate = directory.appendingPathComponent(resolvedName)
+         var index = 2
+ 
+         while fileManager.fileExists(atPath: candidate.path) {
+@@ -200,7 +204,21 @@ actor DownloadStore {
          do {
              let data = try Data(contentsOf: url)
              let records = try JSONDecoder().decode([DownloadRecord].self, from: data)
 -            return records.filter { fileManager.fileExists(atPath: $0.savedURL.path) }
 +            return try records.compactMap { record in
-+                if fileManager.fileExists(atPath: record.savedURL.path) { return record }
-+                let relocated = try downloadsDirectoryURL().appendingPathComponent(record.fileName)
-+                guard fileManager.fileExists(atPath: relocated.path) else { return nil }
++                func completeFile(_ url: URL) -> Bool {
++                    guard let attributes = try? fileManager.attributesOfItem(atPath: url.path),
++                          attributes[.type] as? FileAttributeType == .typeRegular,
++                          let size = (attributes[.size] as? NSNumber)?.int64Value else { return false }
++                    return size > 0 && size == record.byteSize
++                }
++                if completeFile(record.savedURL) { return record }
++                let relocated = try downloadsDirectoryURL().appendingPathComponent(URL(fileURLWithPath: record.fileName).lastPathComponent)
++                guard completeFile(relocated) else { return nil }
 +                return DownloadRecord(id: record.id, sourceAssetIdentifier: record.sourceAssetIdentifier,
 +                    fileName: record.fileName, savedURL: relocated, byteSize: record.byteSize,
 +                    completedAt: record.completedAt, exportedToPhotoLibrary: record.exportedToPhotoLibrary,
@@ -3215,7 +3300,7 @@ index 0000000..ed26d47
 +    func consumeDiagnostics() async -> [String] { let result = diagnostics; diagnostics = []; return result }
 +}
 diff --git a/Services/ExperimentalNikonTransport.swift b/Services/ExperimentalNikonTransport.swift
-index 838a986..e1c1c6d 100644
+index 838a986..7d00072 100644
 --- a/Services/ExperimentalNikonTransport.swift
 +++ b/Services/ExperimentalNikonTransport.swift
 @@ -1,10 +1,11 @@
@@ -3286,7 +3371,26 @@ index 838a986..e1c1c6d 100644
          } catch {
              throw mapError(error)
          }
-@@ -151,6 +171,11 @@ actor ExperimentalNikonTransport: CameraTransport {
+@@ -92,6 +112,12 @@ actor ExperimentalNikonTransport: CameraTransport {
+         }
+ 
+         do {
++            let info = try await ptpSession.fetchObjectInfo(handle: handle)
++            let fresh = try await ptpSession.photoAssetForValidation(info, cameraSession: session)
++            guard fresh.fileName == asset.fileName, fresh.byteSize == asset.byteSize,
++                  asset.libraryFingerprint == nil || fresh.libraryFingerprint == asset.libraryFingerprint else {
++                throw CameraAppError.unsupportedOperation("相机文件已变化，请重新读取照片后下载。")
++            }
+             let expectedSize = max(asset.byteSize, 0)
+             if let onProgress {
+                 await onProgress(
+@@ -146,11 +172,16 @@ actor ExperimentalNikonTransport: CameraTransport {
+ 
+     func disconnect() async {
+         if let session {
+-            await session.close()
++            await session.abortConnection()
+         }
          session = nil
      }
  
@@ -3298,7 +3402,7 @@ index 838a986..e1c1c6d 100644
      func consumeDiagnostics() async -> [String] {
          var messages = pendingDiagnostics
          pendingDiagnostics.removeAll()
-@@ -164,6 +189,8 @@ actor ExperimentalNikonTransport: CameraTransport {
+@@ -164,6 +195,8 @@ actor ExperimentalNikonTransport: CameraTransport {
  
      private func mapError(_ error: Error) -> Error {
          switch error {
@@ -3776,14 +3880,16 @@ index a75e984..0fcce4c 100644
      let compressedSize: UInt32
      let thumbnailInfo: PhotoAssetThumbnailInfo?
 diff --git a/Services/PTPIPSession+AssetTraversal.swift b/Services/PTPIPSession+AssetTraversal.swift
-index ac9487f..1244bf8 100644
+index ac9487f..b8a9225 100644
 --- a/Services/PTPIPSession+AssetTraversal.swift
 +++ b/Services/PTPIPSession+AssetTraversal.swift
-@@ -478,7 +478,8 @@ extension PTPIPSession {
+@@ -477,8 +477,9 @@ extension PTPIPSession {
+                 fileName: info.fileName,
                  kind: kind,
                  byteSize: Int64(info.compressedSize),
-                 captureDate: hintedCaptureDate ?? info.captureDate ?? info.modificationDate ?? .distantPast,
+-                captureDate: hintedCaptureDate ?? info.captureDate ?? info.modificationDate ?? .distantPast,
 -                thumbnailInfo: info.thumbnailInfo
++                captureDate: info.captureDate ?? hintedCaptureDate ?? info.modificationDate ?? .distantPast,
 +                thumbnailInfo: info.thumbnailInfo,
 +                directoryIdentifier: "\(info.storageID)/\(info.parentObject)"
              )
@@ -3963,10 +4069,10 @@ index 8524ba9..99dbac7 100644
  
 diff --git a/Services/PTPIPSession+RemoteControl.swift b/Services/PTPIPSession+RemoteControl.swift
 new file mode 100644
-index 0000000..425b034
+index 0000000..d6be6d6
 --- /dev/null
 +++ b/Services/PTPIPSession+RemoteControl.swift
-@@ -0,0 +1,118 @@
+@@ -0,0 +1,125 @@
 +import Foundation
 +
 +extension PTPIPSession {
@@ -3997,6 +4103,13 @@ index 0000000..425b034
 +            let packet = try await commandConnection.receivePacket()
 +            try Self.validateResponse(PTPIPBinary.parseResponsePacket(packet), expectedTransactionID: transaction)
 +        }
++    }
++
++    func photoAssetForValidation(_ info: PTPIPObjectInfo, cameraSession: CameraSession) throws -> PhotoAsset {
++        guard case .asset(let asset) = classifyObject(info, hintedKind: nil, hintedCaptureDate: nil) else {
++            throw CameraAppError.unsupportedOperation("相机原对象已不再是可下载照片。")
++        }
++        return asset.scoped(to: cameraSession)
 +    }
 +
 +    func resetCaptureWatch() { watchSeenHandles = nil; pendingAddedHandles.removeAll() }
