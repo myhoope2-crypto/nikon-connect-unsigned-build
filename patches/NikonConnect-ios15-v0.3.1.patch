@@ -1016,7 +1016,7 @@ index 0000000..d877ced
 +}
 diff --git a/Domain/CameraRemoteControl.swift b/Domain/CameraRemoteControl.swift
 new file mode 100644
-index 0000000..5d66692
+index 0000000..fd54a63
 --- /dev/null
 +++ b/Domain/CameraRemoteControl.swift
 @@ -0,0 +1,225 @@
@@ -1105,7 +1105,7 @@ index 0000000..5d66692
 +        switch (filename as NSString).pathExtension.lowercased() {
 +        case "jpg", "jpeg", "heif", "heic", "hif": return .jpeg
 +        case "png": return .png
-+        case "nef", "nrw", "arw", "cr2", "cr3", "raf", "dng": return .raw
++        case "nef", "nrw", "arw", "cr2", "cr3", "raf", "dng", "rw2", "orf", "pef": return .raw
 +        case "mov", "mp4", "avi", "mxf": return .movie
 +        default: return nil
 +        }
@@ -1479,16 +1479,17 @@ index 0000000..49197fd
 +    private static let pictureDetailLimitation = "此项使用复合优化校准数据。Z6 III 数据版本尚未确认，当前只支持切换优化校准，不修改其细项；请在机身调整。"
 +}
 diff --git a/Domain/CameraTransportMode.swift b/Domain/CameraTransportMode.swift
-index 643eaaa..2483052 100644
+index 643eaaa..16829a2 100644
 --- a/Domain/CameraTransportMode.swift
 +++ b/Domain/CameraTransportMode.swift
-@@ -1,22 +1,36 @@
+@@ -1,22 +1,47 @@
  import Foundation
  
  enum CameraTransportMode: String, CaseIterable, Codable, Identifiable, Sendable {
 -    case experimentalNikon
 -
 +    case experimentalNikon, experimentalSony, experimentalCanon, experimentalFuji, experimentalFujiLegacy
++    case experimentalRicoh, experimentalPanasonic, experimentalOlympus
      var id: String { rawValue }
 -
      var title: String {
@@ -1499,6 +1500,9 @@ index 643eaaa..2483052 100644
 +        case .experimentalCanon: return "佳能 CCAPI（实验）"
 +        case .experimentalFuji: return "富士 XApp 协议（实验）"
 +        case .experimentalFujiLegacy: return "富士传统无线（实验）"
++        case .experimentalRicoh: return "理光／宾得无线（实验）"
++        case .experimentalPanasonic: return "松下 LUMIX 无线（实验）"
++        case .experimentalOlympus: return "奥林巴斯／OM 无线（实验）"
 +        }
      }
 -
@@ -1510,6 +1514,9 @@ index 643eaaa..2483052 100644
 +        case .experimentalCanon: return "相机需要支持并启用 CCAPI；按相机屏幕显示的地址和端口填写。部分机型需先激活该功能。"
 +        case .experimentalFuji: return "X-T30 III 等 XApp 协议机型：在上方搜索并选择相机，应用尝试蓝牙连接、获取网络并自动加入。"
 +        case .experimentalFujiLegacy: return "在相机中打开无线通信，加入相机 Wi-Fi。适用于传统 Camera Remote 协议。"
++        case .experimentalRicoh: return "GR III／IIIx 等已公开的蓝牙接口可尝试启动热点；照片通过原生 /v1 无线接口传输。GR IV 等新协议未逐机确认。"
++        case .experimentalPanasonic: return "使用原生 cam.cgi 与内容目录协议；支持部分 LUMIX Sync／Image App 机型。蓝牙热点启动为 S5 代协议实验实现，新认证机型可能不兼容。"
++        case .experimentalOlympus: return "使用原生无线 HTTP 接口读取照片；先开启相机无线连接并加入网络。暂未实现 OM 蓝牙热点启动。"
 +        }
      }
 -
@@ -1519,11 +1526,15 @@ index 643eaaa..2483052 100644
 +        case .experimentalNikon, .experimentalSony: return "192.168.1.1"
 +        case .experimentalCanon: return "192.168.0.1"
 +        case .experimentalFuji, .experimentalFujiLegacy: return "192.168.0.1"
++        case .experimentalRicoh: return "192.168.0.1"
++        case .experimentalPanasonic: return "192.168.54.1"
++        case .experimentalOlympus: return "192.168.0.10"
 +        }
 +    }
 +    var defaultPort: Int {
 +        switch self { case .experimentalCanon: return 8080
 +        case .experimentalFuji, .experimentalFujiLegacy: return 55740
++        case .experimentalRicoh, .experimentalPanasonic, .experimentalOlympus: return 80
 +        default: return 15740 }
      }
 -
@@ -2126,6 +2137,50 @@ index 0000000..c628c48
 +    @ObservedObject var model: CameraRemoteViewModel
 +    let cameraName: String
 +    var body: some View { CameraLiveSettingsView(model: model) }
++}
+diff --git a/Features/ConnectionSetup/CameraNetworkJoinView.swift b/Features/ConnectionSetup/CameraNetworkJoinView.swift
+new file mode 100644
+index 0000000..506dcff
+--- /dev/null
++++ b/Features/ConnectionSetup/CameraNetworkJoinView.swift
+@@ -0,0 +1,38 @@
++import SwiftUI
++
++struct CameraNetworkJoinView:View {
++    @Environment(\.dismiss) private var dismiss
++    @State private var ssid = ""
++    @State private var password = ""
++    @State private var open = false
++    @State private var busy = false
++    @State private var message = ""
++    let onJoined:()->Void
++    var body:some View {
++        NavigationView {
++            Form {
++                Section(header:Text("加入后自动搜索，无需选择品牌")) {
++                    Text("适用于已开启热点的纯 Wi-Fi 相机。填写机身显示的网络信息，应用请求加入后会搜索并识别相机。")
++                        .foregroundColor(AppTheme.inkMuted)
++                    TextField("相机 Wi-Fi 名称",text:$ssid).textInputAutocapitalization(.never).disableAutocorrection(true)
++                    Toggle("无密码的开放网络",isOn:$open)
++                    if !open { SecureField("相机 Wi-Fi 密码",text:$password) }
++                    Button(busy ? "正在请求加入…" : "加入网络并搜索相机") {
++                        busy = true; message = ""
++                        Task {
++                            defer { busy = false }
++                            do {
++                                try await CameraWiFiCoordinator.shared.joinNetwork(ssid:ssid,password:password,open:open)
++                                dismiss(); onJoined()
++                            } catch { message = error.localizedDescription }
++                        }
++                    }.disabled(busy || ssid.isEmpty)
++                }.disabled(busy)
++                if !message.isEmpty { Text(message).foregroundColor(AppTheme.ink) }
++                Text("系统可能要求确认加入网络。iOS 15 不向普通应用提供全部附近 Wi-Fi 名称，因此这里不能列出尚未加入的热点。")
++                    .font(.footnote).foregroundColor(AppTheme.inkMuted)
++            }.navigationTitle("加入相机 Wi-Fi").navigationBarTitleDisplayMode(.inline)
++                .toolbar { ToolbarItem(placement:.cancellationAction) { Button("关闭") { dismiss() }.disabled(busy) } }
++        }.navigationViewStyle(.stack)
++    }
 +}
 diff --git a/Features/ConnectionSetup/CameraRemoteView.swift b/Features/ConnectionSetup/CameraRemoteView.swift
 new file mode 100644
@@ -3003,10 +3058,10 @@ index 0000000..976cf5d
 +    }
 +}
 diff --git a/Features/ConnectionSetup/ConnectionContainerView.swift b/Features/ConnectionSetup/ConnectionContainerView.swift
-index 62629af..595ec35 100644
+index 62629af..8f4fadb 100644
 --- a/Features/ConnectionSetup/ConnectionContainerView.swift
 +++ b/Features/ConnectionSetup/ConnectionContainerView.swift
-@@ -1,16 +1,63 @@
+@@ -1,16 +1,70 @@
  import SwiftUI
  
  struct ConnectionContainerView: View {
@@ -3017,6 +3072,7 @@ index 62629af..595ec35 100644
  
 +    @State private var showFujiPairing = false
 +    @State private var showWiFiSetup = false
++    @State private var showNetworkJoin = false
 +    @State private var selectingCamera: UUID?
 +    @State private var selectionStatus = ""
 +    @State private var selectionTask: Task<Void,Never>?
@@ -3029,9 +3085,14 @@ index 62629af..595ec35 100644
 +                if connectionViewModel.activeSession == nil {
 +                    NearbyCamerasView(selecting:selectingCamera,busy:selectingCamera != nil || connectionViewModel.isWorking,
 +                        selectionStatus:selectionStatus,onSelect:selectCamera,onStop:stopSelection)
++                    Button { showNetworkJoin = true } label: {
++                        Label("加入相机 Wi-Fi 后自动识别",systemImage:"wifi").frame(maxWidth:.infinity,minHeight:44)
++                    }.buttonStyle(.bordered).disabled(selectingCamera != nil || connectionViewModel.isWorking)
 +                    CustomCard {
 +                        VStack(alignment: .leading, spacing: 12) {
-+                            DisclosureGroup("手动网络与连接方式",isExpanded:$showAdvanced) {
++                            DisclosureGroup("高级排障（可选）",isExpanded:$showAdvanced) {
++                            Text("通常无需设置品牌或协议。仅在自动发现失败、地址特殊或需要传统协议时使用。")
++                                .font(.caption).foregroundColor(AppTheme.inkMuted)
 +                            Picker("连接方式", selection: Binding(get: { connectionViewModel.transportMode },
 +                                set: { connectionViewModel.setTransportMode($0) })) {
 +                                ForEach(CameraTransportMode.allCases) { mode in Text(mode.title).tag(mode) }
@@ -3062,6 +3123,7 @@ index 62629af..595ec35 100644
 +                        }
 +                    }
 +                }
++                if connectionViewModel.activeSession != nil || connectionViewModel.workflowState == .connecting || showAdvanced {
 +                ConnectionSetupView(
 +            selectedBrandTitle: connectionViewModel.transportMode.title,
              workflowState: connectionViewModel.workflowState,
@@ -3072,23 +3134,24 @@ index 62629af..595ec35 100644
              canRefreshPhotos: galleryViewModel.canRefreshPhotos(for: connectionViewModel.activeSession),
              photoCount: galleryViewModel.photoAssets.count,
              hasMorePhotos: galleryViewModel.hasMorePhotos,
-@@ -24,6 +71,9 @@ struct ConnectionContainerView: View {
+@@ -24,6 +78,9 @@ struct ConnectionContainerView: View {
                      await galleryViewModel.refreshPhotos()
                  }
              },
 +            onStopConnecting: {
-+                connectionViewModel.stopConnecting()
++                if selectingCamera != nil { stopSelection() } else { connectionViewModel.stopConnecting() }
 +            },
              onDisconnect: {
                  connectionViewModel.disconnect()
                  galleryViewModel.resetForDisconnectedSession()
-@@ -33,7 +83,82 @@ struct ConnectionContainerView: View {
+@@ -33,7 +90,119 @@ struct ConnectionContainerView: View {
                      await galleryViewModel.refreshPhotos()
                  }
              }
 -        )
 +                ).frame(minHeight: connectionViewModel.activeSession == nil ? 360 : 520)
 +                Text(connectionViewModel.lastSummary).font(.footnote).foregroundColor(AppTheme.inkMuted)
++                }
 +            }.padding(20)
 +        }.background(AppTheme.canvas.ignoresSafeArea()).navigationTitle("相机连接").navigationBarTitleDisplayMode(.inline)
 +            .onAppear { if connectionViewModel.activeSession == nil, selectingCamera == nil, !connectionViewModel.isWorking { NearbyCameraDiscovery.shared.scan() } }
@@ -3107,26 +3170,41 @@ index 62629af..595ec35 100644
 +            .sheet(isPresented: $showWiFiSetup) {
 +                CameraWiFiSetupView(mode: connectionViewModel.transportMode, onSaved: { connectAndRead() })
 +            }
++            .sheet(isPresented:$showNetworkJoin) { CameraNetworkJoinView { NearbyCameraDiscovery.shared.stopScan(); NearbyCameraDiscovery.shared.scan() } }
 +    }
 +    private func stopSelection() {
 +        selectionTask?.cancel(); connectionViewModel.stopConnecting()
 +        NearbyCameraDiscovery.shared.disconnectNikon(); FujiBluetoothController.shared.disconnect()
++        NativeCameraBluetooth.shared.disconnect()
 +        selectionStatus = "正在停止连接…"
      }
 +    private func selectCamera(_ camera: NearbyCamera) {
 +        guard selectingCamera == nil, !connectionViewModel.isWorking else { return }
 +        NearbyCameraDiscovery.shared.stopScan(); selectingCamera = camera.id
-+        selectionStatus = "已选择 \(camera.name)，正在准备蓝牙与网络…"
++        selectionStatus = "已选择 \(camera.name)，正在校验连接方式…"
 +        selectionTask = Task {
 +            defer { selectingCamera = nil; selectionTask = nil }
 +            do {
 +                let discovery = NearbyCameraDiscovery.shared
-+                let matching = wifi.profiles.first { $0.bluetoothID == camera.id.uuidString && ($0.mode == camera.brand.mode || (camera.brand == .fuji && $0.mode == .experimentalFujiLegacy)) }
-+                let mode = matching?.mode ?? camera.brand.mode
++                let matching = camera.usesBluetooth ? wifi.profiles.first { $0.bluetoothID == camera.id.uuidString && ($0.mode == camera.brand.mode || (camera.brand == .fuji && $0.mode == .experimentalFujiLegacy)) } : nil
++                var detectedMode = camera.networkMode ?? matching?.mode ?? camera.brand.mode
++                if let host = camera.connectionHost, camera.brand == .unknown, camera.servicePort == 15740 {
++                    selectionStatus = "正在读取所选无线相机的设备身份…"
++                    detectedMode = try await identifyPTPCamera(host:host,port:15740)
++                }
++                guard let mode = detectedMode else {
++                    selectionStatus = "已发现 \(camera.name)，但本版尚未接入该机型的连接协议。发现广播不代表支持传输或遥控。"
++                    return
++                }
 +                connectionViewModel.setTransportMode(mode)
 +                if camera.brand != .nikon { discovery.disconnectNikon() }
 +                if camera.brand != .fuji { FujiBluetoothController.shared.disconnect() }
-+                if camera.brand == .fuji {
++                if let host = camera.connectionHost {
++                    NativeCameraBluetooth.shared.disconnect()
++                    connectionViewModel.hostInput = host; connectionViewModel.portInput = String(camera.servicePort ?? mode.defaultPort)
++                    connectionViewModel.saveTarget(); wifi.useCurrentNetwork(mode:mode)
++                } else if camera.brand == .fuji {
++                    NativeCameraBluetooth.shared.disconnect()
 +                    let controller = FujiBluetoothController.shared
 +                    try await controller.restoreConnection(camera.id.uuidString)
 +                    try await controller.readWiFiCredentials()
@@ -3135,27 +3213,48 @@ index 62629af..595ec35 100644
 +                        open:controller.wifiPassword.isEmpty,mode:mode,bluetoothID:camera.id.uuidString)
 +                    wifi.enabled = true
 +                } else if camera.brand == .nikon {
++                    NativeCameraBluetooth.shared.disconnect()
 +                    if let matching { wifi.choose(matching); wifi.enabled = true }
 +                    else {
 +                        try await discovery.activateNikon(camera.id.uuidString)
 +                        try Task.checkCancellation()
-+                        discovery.remember(camera); showWiFiSetup = true; showAdvanced = true
++                        discovery.remember(camera); showWiFiSetup = true
 +                        selectionStatus = "已请求开启 \(camera.name) 的热点。首次请保存这台相机的 Wi-Fi 名称与密码，以后选择它即可尝试自动启动并加入。"
 +                        return
 +                    }
++                } else if [.ricoh,.pentax,.panasonic,.canon].contains(camera.brand) {
++                    let credentials = try await NativeCameraBluetooth.shared.start(camera)
++                    try Task.checkCancellation()
++                    try wifi.save(name:camera.name,ssid:credentials.ssid,password:credentials.password,
++                        open:credentials.password.isEmpty,mode:mode,bluetoothID:camera.id.uuidString)
++                    wifi.enabled = true
++                    if camera.brand == .canon {
++                        selectionStatus = "已请求启动佳能热点。本版照片通道需要相机启用 CCAPI，手机热点连接成功不代表已开放 CCAPI。"
++                    }
 +                } else {
-+                    discovery.remember(camera); showWiFiSetup = true; showAdvanced = true
-+                    selectionStatus = "已选择 \(camera.name)。当前未接入该品牌蓝牙热点启动，请按机身提示启用连接方式并保存网络。"
++                    NativeCameraBluetooth.shared.disconnect(); discovery.remember(camera); showNetworkJoin = true
++                    selectionStatus = camera.brand == .sony ? "索尼手机蓝牙热点与 PC 遥控使用不同通道。本版尚未接入手机蓝牙启动，请在机身启用 PC 遥控 Wi-Fi，加入后自动识别。" : "请在机身启用 Wi-Fi，加入后应用会按原生协议识别，无需选择品牌。"
 +                    return
 +                }
 +                discovery.remember(camera)
 +                try Task.checkCancellation()
-+                if await connectionViewModel.connect() {
++                if await withTaskCancellationHandler(operation:{ await connectionViewModel.connect() },onCancel:{ Task { @MainActor in connectionViewModel.stopConnecting() } }) {
 +                    selectionStatus = "已连接 \(camera.name)。"; await galleryViewModel.refreshPhotos()
 +                } else { selectionStatus = connectionViewModel.lastSummary }
 +            } catch is CancellationError { selectionStatus = "已停止连接所选相机。" }
 +            catch { selectionStatus = "连接未完成：\(shell.userFacingMessage(for:error))" }
 +        }
++    }
++    private func identifyPTPCamera(host:String,port:Int) async throws -> CameraTransportMode {
++        let peer = PTPIPSession(host:host,port:UInt16(port))
++        do {
++            let info = try await withTaskCancellationHandler { try await peer.establishConnection() } onCancel: { Task { await peer.abortConnection() } }
++            await peer.closeSessionTransport(); try Task.checkCancellation()
++            let manufacturer = (info.manufacturer ?? "").uppercased()
++            if manufacturer.contains("NIKON") { return .experimentalNikon }
++            if manufacturer.contains("SONY") { return .experimentalSony }
++            throw CameraAppError.unsupportedOperation("已读取相机身份，但本版尚未接入 \(info.manufacturer ?? "该厂商") 的此种无线协议。")
++        } catch { await peer.abortConnection(); throw error }
 +    }
 +    private func connectAndRead() {
 +        Task { if await connectionViewModel.connect() { await galleryViewModel.refreshPhotos() } }
@@ -3265,7 +3364,7 @@ index f4cd403..00e275b 100644
      }
  }
 diff --git a/Features/ConnectionSetup/ConnectionViewModel.swift b/Features/ConnectionSetup/ConnectionViewModel.swift
-index f3c3fdb..29c8d4c 100644
+index f3c3fdb..4db2817 100644
 --- a/Features/ConnectionSetup/ConnectionViewModel.swift
 +++ b/Features/ConnectionSetup/ConnectionViewModel.swift
 @@ -10,15 +10,18 @@ final class ConnectionViewModel: ObservableObject {
@@ -3312,7 +3411,7 @@ index f3c3fdb..29c8d4c 100644
      }
  
      func bootstrapIfNeeded() async {
-@@ -72,22 +72,78 @@ final class ConnectionViewModel: ObservableObject {
+@@ -72,22 +72,79 @@ final class ConnectionViewModel: ObservableObject {
      }
  
      @discardableResult
@@ -3343,6 +3442,7 @@ index f3c3fdb..29c8d4c 100644
 +        connectionTask = nil
 +        task.cancel()
 +        NearbyCameraDiscovery.shared.disconnectNikon()
++        NativeCameraBluetooth.shared.disconnect()
 +        activeSession = nil
 +        isWorking = false
 +        workflowState = .waitingForWifi
@@ -3397,7 +3497,7 @@ index f3c3fdb..29c8d4c 100644
  
              sessionCoordinator.setActiveSession(session, transport: transport)
              activeSession = session
-@@ -95,21 +151,34 @@ final class ConnectionViewModel: ObservableObject {
+@@ -95,21 +152,34 @@ final class ConnectionViewModel: ObservableObject {
              lastSummary = "已连接到\(session.cameraName)（\(session.connectedHost):\(session.port)）"
              shell.appendLog(lastSummary)
              await appendTransportDiagnostics(from: transport)
@@ -3438,7 +3538,7 @@ index f3c3fdb..29c8d4c 100644
          Haptics.impact(.medium)
          let transport = sessionCoordinator.clearSession()
          activeSession = nil
-@@ -127,13 +196,32 @@ final class ConnectionViewModel: ObservableObject {
+@@ -127,13 +197,32 @@ final class ConnectionViewModel: ObservableObject {
          }
      }
  
@@ -3473,7 +3573,7 @@ index f3c3fdb..29c8d4c 100644
          let config = CameraConnectionConfig(
              host: host,
              port: port,
-@@ -150,10 +238,10 @@ final class ConnectionViewModel: ObservableObject {
+@@ -150,10 +239,10 @@ final class ConnectionViewModel: ObservableObject {
      }
  
      private func persistConfiguration() {
@@ -3486,7 +3586,7 @@ index f3c3fdb..29c8d4c 100644
              transportMode: transportMode,
              autoExportToPhotoLibrary: autoExportToPhotoLibrary,
              prioritizeJPEGDownloads: prioritizeJPEGDownloads
-@@ -163,6 +251,8 @@ final class ConnectionViewModel: ObservableObject {
+@@ -163,6 +252,8 @@ final class ConnectionViewModel: ObservableObject {
      }
  
      private func handle(_ error: Error) {
@@ -3574,14 +3674,15 @@ index 0000000..77472e8
 +}
 diff --git a/Features/ConnectionSetup/NearbyCamerasView.swift b/Features/ConnectionSetup/NearbyCamerasView.swift
 new file mode 100644
-index 0000000..e640153
+index 0000000..e4db823
 --- /dev/null
 +++ b/Features/ConnectionSetup/NearbyCamerasView.swift
-@@ -0,0 +1,61 @@
+@@ -0,0 +1,66 @@
 +import SwiftUI
 +
 +struct NearbyCamerasView: View {
 +    @ObservedObject private var discovery = NearbyCameraDiscovery.shared
++    @ObservedObject private var nativeBluetooth = NativeCameraBluetooth.shared
 +    let selecting: UUID?
 +    let busy: Bool
 +    let selectionStatus: String
@@ -3591,7 +3692,7 @@ index 0000000..e640153
 +        CustomCard {
 +            VStack(alignment:.leading,spacing:14) {
 +                Label("搜索附近相机",systemImage:"dot.radiowaves.left.and.right").font(.headline)
-+                Text("先搜索，再由你选择连接哪一台。相机需开启蓝牙；首次使用请在机身打开配对界面。")
++                Text("无需先选品牌。自动搜索蓝牙广播与当前 Wi-Fi 网络，再由你选择连接哪一台。蓝牙机型首次需在机身进入配对界面。")
 +                    .font(.footnote).foregroundColor(AppTheme.inkMuted)
 +                Button {
 +                    if discovery.isScanning { discovery.stopScan() } else { discovery.scan() }
@@ -3601,15 +3702,19 @@ index 0000000..e640153
 +                        .foregroundColor(AppTheme.onAction).background(AppTheme.actionFill,in:RoundedRectangle(cornerRadius:12))
 +                }.buttonStyle(.plain).disabled(busy)
 +                Text(discovery.status).font(.caption).foregroundColor(AppTheme.inkMuted)
++                if !discovery.bluetoothStatus.isEmpty { Text(discovery.bluetoothStatus).font(.caption).foregroundColor(AppTheme.inkMuted) }
++                if !discovery.networkStatus.isEmpty { Text(discovery.networkStatus).font(.caption).foregroundColor(AppTheme.inkMuted) }
 +                if !selectionStatus.isEmpty { Text(selectionStatus).font(.footnote).foregroundColor(AppTheme.ink) }
 +                if selecting != nil {
 +                    Button("停止连接所选相机",role:.destructive,action:onStop).buttonStyle(.bordered)
 +                    if (discovery.nearby + discovery.saved).first(where:{ $0.id == selecting })?.brand == .nikon {
 +                        Text(discovery.nikonStatus).font(.caption).foregroundColor(AppTheme.inkMuted)
++                    } else if !nativeBluetooth.status.isEmpty {
++                        Text(nativeBluetooth.status).font(.caption).foregroundColor(AppTheme.inkMuted)
 +                    }
 +                }
 +                if !discovery.nearby.isEmpty {
-+                    Text("附近发现的相机").font(.subheadline.bold())
++                    Text("发现的相机与连接候选").font(.subheadline.bold())
 +                    ForEach(discovery.nearby) { item in cameraButton(item,nearby:true) }
 +                }
 +                let saved = discovery.saved.filter { item in !discovery.nearby.contains(where:{ $0.id == item.id }) }
@@ -3617,7 +3722,7 @@ index 0000000..e640153
 +                    Text("已保存的相机").font(.subheadline.bold())
 +                    ForEach(saved) { item in cameraButton(item,nearby:false) }
 +                }
-+                Text("列表按蓝牙广播识别；发现设备不代表已验证兼容。仅开启 Wi-Fi、未广播蓝牙的相机不会出现在这里，可使用下方手动网络设置。")
++                Text("发现候选不代表已验证兼容。纯 Wi-Fi 相机需要先加入其网络或与手机在同一局域网；iOS 15 无法扫描所有未加入的 Wi-Fi 热点。不同通道可能显示同一台相机，连接后才可确认身份。")
 +                    .font(.caption).foregroundColor(AppTheme.inkMuted)
 +            }
 +        }
@@ -3628,9 +3733,9 @@ index 0000000..e640153
 +                Image(systemName:"camera.fill").foregroundColor(AppTheme.accentStrong)
 +                VStack(alignment:.leading,spacing:4) {
 +                    Text(item.name).font(.headline).foregroundColor(AppTheme.ink)
-+                    Text("\(item.brand.title) · \(nearby ? "附近广播" : "保存记录，需重新连接")" + (item.signal.map { " · \($0) dBm" } ?? ""))
++                    Text("\(item.brand.title) · \(nearby ? (item.usesBluetooth ? "附近蓝牙广播" : "当前网络响应") : "保存记录，需重新连接")" + (item.signal.map { " · 信号 \($0) dBm" } ?? ""))
 +                        .font(.caption).foregroundColor(AppTheme.inkMuted)
-+                    Text(item.brand == .fuji ? "蓝牙连接后自动获取 Wi-Fi（实验）" : item.brand == .nikon ? "蓝牙启动 Wi-Fi（实验，首次保存网络密码）" : "已识别广播，热点需按机身协议配置")
++                    Text(item.connectionHint)
 +                        .font(.caption).foregroundColor(AppTheme.inkMuted)
 +                }
 +                Spacer()
@@ -4780,24 +4885,27 @@ index 0000000..43c31c8
 +<key>com.apple.developer.networking.HotspotConfiguration</key><true/>
 +</dict></plist>
 diff --git a/Resources/Info.plist b/Resources/Info.plist
-index 2e36032..985ea16 100644
+index 2e36032..f6be96b 100644
 --- a/Resources/Info.plist
 +++ b/Resources/Info.plist
-@@ -23,13 +23,19 @@
+@@ -23,13 +23,21 @@
  	<key>LSRequiresIPhoneOS</key>
  	<true/>
  	<key>NSLocalNetworkUsageDescription</key>
 -	<string>用于连接 Nikon 相机的本地 Wi‑Fi，并读取照片列表或下载照片。</string>
 -	<key>NSPhotoLibraryAddUsageDescription</key>
-+	<string>用于连接相机的本地 Wi-Fi，读取照片、传输文件与遥控拍摄。</string>
+-	<string>用于把从 Nikon 相机下载的照片保存到系统相册。</string>
+-	<key>NSSupportsLiveActivities</key>
+-	<true/>
++	<string>用于搜索当前 Wi-Fi 网络中的相机、连接所选设备、读取照片、传输文件与遥控拍摄。</string>
++    <key>NSBonjourServices</key>
++    <array><string>_ptp._tcp</string><string>_http._tcp</string></array>
 +	<key>NSBluetoothAlwaysUsageDescription</key>
-+    <string>用于配对富士相机、启动相机 Wi-Fi 和遥控快门。</string>
++    <string>用于搜索附近相机，并按机型进行蓝牙配对和请求启动相机 Wi-Fi。</string>
 +    <key>NSAppTransportSecurity</key>
 +    <dict><key>NSAllowsArbitraryLoads</key><true/></dict>
 +    <key>NSPhotoLibraryAddUsageDescription</key>
- 	<string>用于把从 Nikon 相机下载的照片保存到系统相册。</string>
--	<key>NSSupportsLiveActivities</key>
--	<true/>
++	<string>用于把从相机下载的照片保存到系统相册。</string>
  	<key>UIApplicationSupportsIndirectInputEvents</key>
  	<true/>
 +    <key>UIFileSharingEnabled</key>
@@ -4809,10 +4917,10 @@ index 2e36032..985ea16 100644
  		<string>UIInterfaceOrientationPortrait</string>
 diff --git a/Resources/ThirdPartyNotices.txt b/Resources/ThirdPartyNotices.txt
 new file mode 100644
-index 0000000..730dfea
+index 0000000..466b701
 --- /dev/null
 +++ b/Resources/ThirdPartyNotices.txt
-@@ -0,0 +1,747 @@
+@@ -0,0 +1,775 @@
 +Nikon Connect 0.2.0 实验扩展与开源说明
 +
 +新增通道是 Swift 改写实现，未经相机真机验证，不代表任何厂商背书或所有机型支持。
@@ -5560,6 +5668,34 @@ index 0000000..730dfea
 +LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 +OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 +SOFTWARE.
++
++
++松下原生无线接口与蓝牙热点启动参考：sapoepsilon/lumix-remote（MIT）
++https://github.com/sapoepsilon/lumix-remote
++固定提交：985977636202bdeff5acaea82444c914834b1e1f
++MIT License
++
++Copyright (c) 2026 Lumix Remote contributors
++
++Permission is hereby granted, free of charge, to any person obtaining a copy
++of this software and associated documentation files (the "Software"), to deal
++in the Software without restriction, including without limitation the rights
++to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
++copies of the Software, and to permit persons to whom the Software is
++furnished to do so, subject to the following conditions:
++
++The above copyright notice and this permission notice shall be included in all
++copies or substantial portions of the Software.
++
++THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
++IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
++FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
++AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
++LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
++OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
++SOFTWARE.
++
++其余协议研究仅使用公开接口编号、字段和报文格式，Swift 实现独立编写；未引入其应用代码、闭源库或厂商二进制。
 diff --git a/Services/AssetThumbnailService.swift b/Services/AssetThumbnailService.swift
 index b0e0ec8..b90f89d 100644
 --- a/Services/AssetThumbnailService.swift
@@ -5709,10 +5845,10 @@ index b0e0ec8..b90f89d 100644
          return await cameraThumbnailData(
 diff --git a/Services/CameraHTTPClient.swift b/Services/CameraHTTPClient.swift
 new file mode 100644
-index 0000000..d6a32a5
+index 0000000..78463d5
 --- /dev/null
 +++ b/Services/CameraHTTPClient.swift
-@@ -0,0 +1,139 @@
+@@ -0,0 +1,159 @@
 +import Foundation
 +
 +enum CameraJSON: Codable, Sendable {
@@ -5757,6 +5893,26 @@ index 0000000..d6a32a5
 +        session = URLSession(configuration: config, delegate: CameraHTTPRedirectGuard(host: host, port: port), delegateQueue: nil)
 +    }
 +    func close() { session.invalidateAndCancel() }
++    func jpegFrame(_ reference:String) async throws -> Data {
++        let config = URLSessionConfiguration.ephemeral; config.timeoutIntervalForRequest = 5; config.timeoutIntervalForResource = 8
++        let stream = URLSession(configuration:config,delegate:CameraHTTPRedirectGuard(host:baseURL.host ?? "",port:baseURL.port ?? 80),delegateQueue:nil)
++        defer { stream.invalidateAndCancel() }
++        let (bytes,response) = try await stream.bytes(for:URLRequest(url:url(reference)))
++        try validate(response); var data = Data(); var last:UInt8 = 0
++        for try await byte in bytes {
++            try Task.checkCancellation(); guard data.count < 4*1024*1024 else { throw PTPIPError.malformedPayload("实时画面过大") }
++            data.append(byte)
++            if last == 0xff && byte == 0xd9, data.count > 4 { return try CameraMediaFormat.jpeg(in:data) }
++            last = byte
++        }
++        throw CameraAppError.unsupportedOperation("相机未返回完整实时画面。")
++    }
++    func data(_ reference: String, method: String = "GET", body: Data? = nil,
++              query: String? = nil, headers: [String:String] = [:]) async throws -> Data {
++        var request = URLRequest(url: try url(reference,query:query)); request.httpMethod = method; request.httpBody = body
++        for (key,value) in headers { request.setValue(value,forHTTPHeaderField:key) }
++        return try await boundedData(request)
++    }
 +    func url(_ reference: String, query: String? = nil) throws -> URL {
 +        guard let result = URL(string: reference, relativeTo: baseURL)?.absoluteURL,
 +              result.host?.lowercased() == baseURL.host?.lowercased(),
@@ -5852,11 +6008,189 @@ index 0000000..d6a32a5
 +        if let progress { Task { await progress(update) } }
 +    }
 +}
+diff --git a/Services/CameraNetworkDiscovery.swift b/Services/CameraNetworkDiscovery.swift
+new file mode 100644
+index 0000000..711e681
+--- /dev/null
++++ b/Services/CameraNetworkDiscovery.swift
+@@ -0,0 +1,172 @@
++import Foundation
++import CryptoKit
++import Darwin
++@preconcurrency import Network
++
++// Wi-Fi 发现只使用公开的 Bonjour 和当前网络单播，不依赖需要苹果单独批准的组播权限。
++@MainActor
++final class CameraNetworkDiscovery: NSObject, @preconcurrency NetServiceBrowserDelegate, @preconcurrency NetServiceDelegate {
++    static let shared = CameraNetworkDiscovery()
++    private var task: Task<Void,Never>?
++    private var token = UUID()
++    private var browsers: [NetServiceBrowser] = []
++    private var services: [NetService] = []
++    private var onFound: ((NearbyCamera)->Void)?
++    private var onStatus: ((String)->Void)?
++    private var probing: Set<String> = []
++    func start(saved:[NearbyCamera],onFound:@escaping (NearbyCamera)->Void,onStatus:@escaping (String)->Void) {
++        stop(); self.onFound = onFound; self.onStatus = onStatus; let id = token
++        guard let network = Self.wifiHosts() else { onStatus("未检测到可用 Wi-Fi 地址，蓝牙搜索仍可继续。纯 Wi-Fi 相机请先加入其网络。"); return }
++        onStatus("正在搜索当前 Wi-Fi 的邻近网段及相机服务…")
++        for type in ["_ptp._tcp.","_http._tcp."] {
++            let browser = NetServiceBrowser(); browser.delegate = self; browsers.append(browser)
++            browser.searchForServices(ofType:type,inDomain:"local.")
++        }
++        var hosts = Set(network)
++        for value in saved { if let host = value.connectionHost, Self.isLocal(host) { hosts.insert(host) } }
++        // 主动探测限于当前 Wi-Fi 的至多 254 个地址；更大子网仍可经 Bonjour 发现或高级地址连接。
++        let list = hosts.sorted()
++        task = Task {
++            for start in stride(from:0,to:list.count,by:16) {
++                guard !Task.isCancelled, token == id else { return }
++                let chunk = Array(list[start..<min(start+16,list.count)])
++                await withTaskGroup(of:[NearbyCamera].self) { group in
++                    for host in chunk { group.addTask { await Self.probe(host) } }
++                    for await items in group {
++                        guard !Task.isCancelled, token == id else { group.cancelAll(); break }
++                        for item in items { self.onFound?(item) }
++                    }
++                }
++            }
++            guard token == id, !Task.isCancelled else { return }
++            self.onStatus?("当前 Wi-Fi 网段搜索完成；无法扫描尚未加入的其他 Wi-Fi 热点。更大网段可使用高级地址或 Bonjour。")
++        }
++    }
++    func stop() {
++        token = UUID(); task?.cancel(); task = nil
++        for browser in browsers { browser.stop() }; browsers = []
++        for service in services { service.stop() }; services = []; probing = []
++        onFound = nil; onStatus = nil
++    }
++    func netServiceBrowser(_ browser:NetServiceBrowser,didFind service:NetService,moreComing:Bool) {
++        services.append(service); service.delegate = self; service.resolve(withTimeout:3)
++    }
++    func netServiceDidResolveAddress(_ sender:NetService) {
++        guard let host = sender.hostName, host.hasSuffix(".local."), !probing.contains(host) else { return }
++        probing.insert(host); let id = token; let port = sender.port
++        Task {
++            let items = await Self.probe(host,advertisedPort:port)
++            guard token == id else { return }; for item in items { onFound?(item) }
++        }
++    }
++    nonisolated static func isLocal(_ host:String) -> Bool {
++        let values = host.split(separator:".").compactMap { Int($0) }
++        guard values.count == 4, values.allSatisfy({ (0...255).contains($0) }) else { return host.hasSuffix(".local.") || host.hasSuffix(".local") }
++        return values[0] == 10 || (values[0] == 192 && values[1] == 168) ||
++            (values[0] == 172 && (16...31).contains(values[1])) || (values[0] == 169 && values[1] == 254)
++    }
++    nonisolated private static func wifiHosts() -> [String]? {
++        var pointer: UnsafeMutablePointer<ifaddrs>?
++        guard getifaddrs(&pointer) == 0 else { return nil }; defer { freeifaddrs(pointer) }
++        var current = pointer
++        while let item = current {
++            defer { current = item.pointee.ifa_next }
++            guard String(cString:item.pointee.ifa_name) == "en0", let address = item.pointee.ifa_addr,
++                  address.pointee.sa_family == UInt8(AF_INET), let mask = item.pointee.ifa_netmask else { continue }
++            let ip = address.withMemoryRebound(to:sockaddr_in.self,capacity:1) { UInt32(bigEndian:$0.pointee.sin_addr.s_addr) }
++            let netmask = mask.withMemoryRebound(to:sockaddr_in.self,capacity:1) { UInt32(bigEndian:$0.pointee.sin_addr.s_addr) }
++            let boundedMask = netmask | 0xffffff00
++            let low = ip & boundedMask; let high = low | ~boundedMask
++            guard high > low + 1 else { return [] }
++            return ((low+1)..<high).filter { $0 != ip }.map { value in "\((value >> 24)&255).\((value >> 16)&255).\((value >> 8)&255).\(value&255)" }
++        }
++        return nil
++    }
++    nonisolated private static func probe(_ host:String,advertisedPort:Int? = nil) async -> [NearbyCamera] {
++        guard isLocal(host), !Task.isCancelled else { return [] }
++        let ports = Set([80,8080,60606,15740,55740] + (advertisedPort.map { [$0] } ?? []))
++        return await withTaskGroup(of:[NearbyCamera].self,returning:[NearbyCamera].self) { group in
++            for port in ports where (1...65535).contains(port) {
++                group.addTask {
++                    guard await CameraPortProbe.open(host:host,port:port), !Task.isCancelled else { return [] }
++                    if port == 15740 { return [candidate(host,port,.unknown,"PTP 无线相机候选",nil)] }
++                    if port == 55740 { return [candidate(host,port,.fuji,"富士无线相机候选",.experimentalFuji)] }
++                    var result: [NearbyCamera] = []
++                    if port == 60606, let data = await read(host,port,"/Lumix/Server0/ddd"), let xml = try? CameraXML.parse(data),
++                       (xml.first("manufacturer") ?? "").uppercased().contains("PANASONIC") {
++                        result.append(candidate(host,80,.panasonic,xml.first("friendlyName") ?? xml.first("modelNumber") ?? "LUMIX",.experimentalPanasonic))
++                    }
++                    if let data = await read(host,port,"/ccapi"), let json = try? JSONDecoder().decode(CameraJSON.self,from:data),
++                       json.object.values.flatMap(\.array).contains(where:{ $0["url"].string?.hasSuffix("/deviceinformation") == true }) {
++                        result.append(candidate(host,port,.canon,"佳能 CCAPI 相机",.experimentalCanon))
++                    }
++                    if port == 80 {
++                        if let data = await read(host,port,"/v1/props"), let json = try? JSONDecoder().decode(CameraJSON.self,from:data),
++                           let model = json["model"].string, (json["manufacturer"].string ?? "").uppercased().contains("RICOH") || model.uppercased().contains("PENTAX") {
++                            result.append(candidate(host,port,model.uppercased().contains("PENTAX") ? .pentax : .ricoh,model,.experimentalRicoh))
++                        }
++                        if let data = await read(host,port,"/get_caminfo.cgi"), let xml = try? CameraXML.parse(data),
++                           let model = xml.first("model"), !model.isEmpty, xml.first("version") != nil || xml.first("serial") != nil {
++                            result.append(candidate(host,port,.olympus,model,.experimentalOlympus))
++                        }
++                    }
++                    return result
++                }
++            }
++            var result: [NearbyCamera] = []; for await items in group { result += items }; return result
++        }
++    }
++    nonisolated private static func read(_ host:String,_ port:Int,_ path:String) async -> Data? {
++        var components = URLComponents(); components.scheme = "http"; components.host = host; components.port = port; components.path = path
++        guard let url = components.url else { return nil }
++        let config = URLSessionConfiguration.ephemeral; config.timeoutIntervalForRequest = 1; config.timeoutIntervalForResource = 2
++        config.urlCache = nil; config.connectionProxyDictionary = [:]
++        let session = URLSession(configuration:config,delegate:DiscoveryRedirectGuard(),delegateQueue:nil); defer { session.invalidateAndCancel() }
++        var request = URLRequest(url:url); request.setValue("OI.Share v2",forHTTPHeaderField:"User-Agent")
++        do {
++            let (bytes,response) = try await session.bytes(for:request)
++            guard (response as? HTTPURLResponse)?.statusCode == 200 else { return nil }
++            var result = Data()
++            for try await byte in bytes { guard result.count < 512*1024 else { return nil }; result.append(byte) }
++            return result
++        } catch { return nil }
++    }
++    nonisolated private static func candidate(_ host:String,_ port:Int,_ brand:NearbyCameraBrand,_ name:String,_ mode:CameraTransportMode?) -> NearbyCamera {
++        let hex = SHA256.hash(data:Data("\(host):\(port)".utf8)).prefix(16).map { String(format:"%02x",$0) }.joined()
++        let id = "\(hex.prefix(8))-\(hex.dropFirst(8).prefix(4))-\(hex.dropFirst(12).prefix(4))-\(hex.dropFirst(16).prefix(4))-\(hex.suffix(12))"
++        return NearbyCamera(id:UUID(uuidString:id)!,name:name,brand:brand,signal:nil,connectionHost:host,servicePort:port,networkMode:mode)
++    }
++}
++private final class DiscoveryRedirectGuard:NSObject,URLSessionTaskDelegate,@unchecked Sendable {
++    func urlSession(_ session:URLSession,task:URLSessionTask,willPerformHTTPRedirection response:HTTPURLResponse,newRequest request:URLRequest,completionHandler:@escaping @Sendable (URLRequest?)->Void) { completionHandler(nil) }
++}
++private final class CameraPortProbe: @unchecked Sendable {
++    private let lock = NSLock()
++    private var continuation: CheckedContinuation<Bool,Never>?
++    private var finished = false
++    private var connection: NWConnection?
++    static func open(host:String,port:Int) async -> Bool {
++        let probe = CameraPortProbe()
++        return await withTaskCancellationHandler {
++            await withCheckedContinuation { continuation in probe.begin(host:host,port:port,continuation:continuation) }
++        } onCancel: { probe.finish(false) }
++    }
++    private func begin(host:String,port:Int,continuation:CheckedContinuation<Bool,Never>) {
++        lock.lock()
++        guard !finished else { lock.unlock(); continuation.resume(returning:false); return }
++        self.continuation = continuation
++        let params = NWParameters.tcp; params.requiredInterfaceType = .wifi
++        let connection = NWConnection(host:NWEndpoint.Host(host),port:NWEndpoint.Port(rawValue:UInt16(port))!,using:params)
++        self.connection = connection; lock.unlock()
++        connection.stateUpdateHandler = { [weak self] state in
++            switch state { case .ready: self?.finish(true); case .failed,.cancelled: self?.finish(false); default: break }
++        }
++        connection.start(queue:.global(qos:.utility))
++        DispatchQueue.global(qos:.utility).asyncAfter(deadline:.now()+0.6) { self.finish(false) }
++    }
++    private func finish(_ result:Bool) {
++        lock.lock(); guard !finished else { lock.unlock(); return }; finished = true
++        let pending = continuation; continuation = nil; let connection = connection; self.connection = nil; lock.unlock()
++        connection?.cancel(); pending?.resume(returning:result)
++    }
++}
 diff --git a/Services/CameraTransportFactory.swift b/Services/CameraTransportFactory.swift
-index aa87293..e924076 100644
+index aa87293..291a8bc 100644
 --- a/Services/CameraTransportFactory.swift
 +++ b/Services/CameraTransportFactory.swift
-@@ -1,7 +1,13 @@
+@@ -1,7 +1,16 @@
  import Foundation
 -
  struct CameraTransportFactory {
@@ -5870,6 +6204,9 @@ index aa87293..e924076 100644
 +        case .experimentalCanon: return ExperimentalCanonTransport()
 +        case .experimentalFuji: return ExperimentalFujiTransport(xapp: true)
 +        case .experimentalFujiLegacy: return ExperimentalFujiTransport(xapp: false)
++        case .experimentalRicoh: return ExperimentalWirelessHTTPTransport(kind:.ricoh)
++        case .experimentalPanasonic: return ExperimentalWirelessHTTPTransport(kind:.panasonic)
++        case .experimentalOlympus: return ExperimentalWirelessHTTPTransport(kind:.olympus)
 +        }
      }
  }
@@ -5890,10 +6227,10 @@ index eef42ce..4ff7b64 100644
  extension CameraTransportFactory: CameraTransportFactoryProtocol {}
 diff --git a/Services/CameraWiFiCoordinator.swift b/Services/CameraWiFiCoordinator.swift
 new file mode 100644
-index 0000000..f4e7aac
+index 0000000..0f2be1e
 --- /dev/null
 +++ b/Services/CameraWiFiCoordinator.swift
-@@ -0,0 +1,149 @@
+@@ -0,0 +1,162 @@
 +import Foundation
 +@preconcurrency import NetworkExtension
 +import Security
@@ -5915,6 +6252,7 @@ index 0000000..f4e7aac
 +    @Published private(set) var profiles: [CameraWiFiProfile] = []
 +    @Published var status = "首次保存相机网络，之后连接时自动请求加入。"
 +    private var preparing = false
++    private var currentNetworkMode:CameraTransportMode?
 +    private let key = "cameraWiFiProfiles.v1"
 +    private var selected: [String: String] {
 +        get { UserDefaults.standard.dictionary(forKey: "selectedCameraWiFi.v1") as? [String:String] ?? [:] }
@@ -5931,7 +6269,8 @@ index 0000000..f4e7aac
 +    func profile(for mode: CameraTransportMode) -> CameraWiFiProfile? {
 +        profiles.first { $0.mode == mode && $0.id.uuidString == selected[mode.rawValue] }
 +    }
-+    func choose(_ profile: CameraWiFiProfile) { selected[profile.mode.rawValue] = profile.id.uuidString; objectWillChange.send() }
++    func choose(_ profile: CameraWiFiProfile) { currentNetworkMode = nil; selected[profile.mode.rawValue] = profile.id.uuidString; objectWillChange.send() }
++    func useCurrentNetwork(mode:CameraTransportMode) { currentNetworkMode = mode; status = "使用已发现相机所在的当前 Wi-Fi 网络。" }
 +    func save(name: String, ssid: String, password: String, open: Bool, mode: CameraTransportMode,
 +              bluetoothID: String? = nil) throws {
 +        guard !ssid.isEmpty, ssid.utf8.count <= 32 else { throw message("Wi-Fi 名称不能为空，且不能超过 32 字节。") }
@@ -5960,7 +6299,7 @@ index 0000000..f4e7aac
 +        persist()
 +    }
 +    func bind(_ session: CameraSession, mode: CameraTransportMode) throws {
-+        guard let p = profile(for: mode), let i = profiles.firstIndex(where: { $0.id == p.id }), enabled else { return }
++        guard currentNetworkMode != mode, let p = profile(for: mode), let i = profiles.firstIndex(where: { $0.id == p.id }), enabled else { return }
 +        if let identity = p.cameraIdentity, identity != session.persistentIdentity {
 +            throw message("当前网络返回了另一台相机，已停止连接。请核对或重新保存对应网络。")
 +        }
@@ -5969,6 +6308,7 @@ index 0000000..f4e7aac
 +    func prepare(mode: CameraTransportMode) async throws {
 +        guard !preparing else { throw message("上一条系统 Wi-Fi 请求尚未结束，请先完成或取消系统提示。") }
 +        preparing = true; defer { preparing = false }
++        if currentNetworkMode == mode { status = "使用当前网络，直接校验所选相机。"; return }
 +        guard enabled else { status = "自动加入已关闭，使用当前网络。"; return }
 +        if mode == .experimentalNikon, let id = profile(for:mode)?.bluetoothID {
 +            status = "正在通过蓝牙请求开启尼康 Wi-Fi…"
@@ -6003,7 +6343,17 @@ index 0000000..f4e7aac
 +            config = NEHotspotConfiguration(ssid: item.ssid, passphrase: pass, isWEP: false)
 +        }
 +        config.joinOnce = false
-+        status = "请求加入 \(item.ssid)，请确认可能出现的系统提示…"
++        try await apply(config,name:item.ssid)
++    }
++    func joinNetwork(ssid:String,password:String,open:Bool) async throws {
++        guard !preparing else { throw message("上一条 Wi-Fi 请求尚未完成。") }
++        guard !ssid.isEmpty,ssid.utf8.count <= 32,open || (8...63).contains(password.utf8.count) else { throw message("请输入有效的网络名称和 WPA 密码。") }
++        preparing = true; defer { preparing = false }
++        let config = open ? NEHotspotConfiguration(ssid:ssid) : NEHotspotConfiguration(ssid:ssid,passphrase:password,isWEP:false)
++        config.joinOnce = false; try await apply(config,name:ssid)
++    }
++    private func apply(_ config:NEHotspotConfiguration,name:String) async throws {
++        status = "请求加入 \(name)，请确认可能出现的系统提示…"
 +        try Task.checkCancellation()
 +        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
 +            NEHotspotConfigurationManager.shared.apply(config) { error in
@@ -6041,6 +6391,47 @@ index 0000000..f4e7aac
 +        var result: CFTypeRef?
 +        guard SecItemCopyMatching(q as CFDictionary, &result) == errSecSuccess, let data = result as? Data else { return nil }
 +        return String(data:data, encoding:.utf8)
++    }
++}
+diff --git a/Services/CameraXML.swift b/Services/CameraXML.swift
+new file mode 100644
+index 0000000..b85c89b
+--- /dev/null
++++ b/Services/CameraXML.swift
+@@ -0,0 +1,35 @@
++import Foundation
++
++// 仅解析当前响应；禁用外部实体，避免从相机返回的 XML 请求其他地址。
++final class CameraXML: NSObject, XMLParserDelegate {
++    final class Node {
++        let name: String
++        let attributes: [String:String]
++        var text = ""
++        var children: [Node] = []
++        init(_ name:String, _ attributes:[String:String] = [:]) { self.name = name.components(separatedBy:":").last ?? name; self.attributes = attributes }
++        func all(_ name:String) -> [Node] { (self.name.caseInsensitiveCompare(name) == .orderedSame ? [self] : []) + children.flatMap { $0.all(name) } }
++        func first(_ name:String) -> String? { all(name).first?.text.trimmingCharacters(in:.whitespacesAndNewlines) }
++    }
++    private let root = Node("document")
++    private var stack: [Node] = []
++    private var nodes = 0
++    static func parse(_ data:Data) throws -> Node {
++        guard data.count <= 8 * 1024 * 1024 else { throw PTPIPError.malformedPayload("XML 响应过大") }
++        let delegate = CameraXML(); delegate.stack = [delegate.root]
++        let parser = XMLParser(data:data); parser.shouldResolveExternalEntities = false; parser.delegate = delegate
++        guard parser.parse() else { throw PTPIPError.malformedPayload("相机 XML 响应无效") }
++        return delegate.root
++    }
++    func parser(_ parser:XMLParser,didStartElement elementName:String,namespaceURI:String?,qualifiedName:String?,attributes attributeDict:[String:String]) {
++        nodes += 1
++        guard stack.count < 64, nodes <= 100000 else { parser.abortParsing(); return }
++        let node = Node(elementName,attributeDict); stack.last?.children.append(node); stack.append(node)
++    }
++    func parser(_ parser:XMLParser,foundCharacters string:String) { stack.last?.text += string }
++    func parser(_ parser:XMLParser,foundCDATA CDATABlock:Data) { stack.last?.text += String(decoding:CDATABlock,as:UTF8.self) }
++    func parser(_ parser:XMLParser,didEndElement elementName:String,namespaceURI:String?,qualifiedName:String?) { if stack.count > 1 { stack.removeLast() } }
++    static func escape(_ text:String) -> String {
++        text.replacingOccurrences(of:"&",with:"&amp;").replacingOccurrences(of:"<",with:"&lt;").replacingOccurrences(of:">",with:"&gt;").replacingOccurrences(of:"\"",with:"&quot;")
 +    }
 +}
 diff --git a/Services/CaptureRecoveryCheckpoint.swift b/Services/CaptureRecoveryCheckpoint.swift
@@ -6954,6 +7345,273 @@ index 0000000..2aa6ff1
 +        return messages + (await ptp?.consumeDiagnostics() ?? [])
 +    }
 +}
+diff --git a/Services/ExperimentalWirelessHTTPTransport.swift b/Services/ExperimentalWirelessHTTPTransport.swift
+new file mode 100644
+index 0000000..b2c4233
+--- /dev/null
++++ b/Services/ExperimentalWirelessHTTPTransport.swift
+@@ -0,0 +1,261 @@
++import Foundation
++
++enum CameraClientIdentity {
++    static let lumixID: String = {
++        let key = "lumixClientIdentity.v1"
++        if let value = UserDefaults.standard.string(forKey:key), value.count == 36 { return value }
++        let value = "4D454930-0100-1000-8001-" + UUID().uuidString.replacingOccurrences(of:"-",with:"").suffix(12)
++        UserDefaults.standard.set(value,forKey:key); return value
++    }()
++}
++
++// 独立实现公开的无线接口。三个系列各自保留其原生协议，不向非 PTP 相机发送 PTP 指令。
++actor ExperimentalWirelessHTTPTransport: CameraTransport, CameraConnectionChecking, CameraRemoteControlling {
++    enum Kind:Sendable,Equatable { case ricoh, panasonic, olympus }
++    private let kind:Kind
++    private var client:CameraHTTPClient?
++    private var contentClient:CameraHTTPClient?
++    private var fileClients:[Int:CameraHTTPClient] = [:]
++    private var pending:[PhotoAsset] = []
++    private var containers:[(String,Int)] = []
++    private var visited:Set<String> = []
++    private var thumbnails:[String:String] = [:]
++    private var ricohStorage:[String:String] = [:]
++    private var stores:[String] = []
++    private var connected = false
++    private var loading = false
++    init(kind:Kind) { self.kind = kind }
++    func connect(using config:CameraConnectionConfig) async throws -> CameraSession {
++        let http = try CameraHTTPClient(host:config.normalizedHost,port:config.port)
++        client = http
++        do {
++            let name:String, identity:String
++            switch kind {
++            case .ricoh:
++                let props = try await http.json("/v1/props")
++                guard let model = props["model"].string,
++                      (props["manufacturer"].string ?? "").uppercased().contains("RICOH") || model.uppercased().contains("PENTAX") else {
++                    throw failure("当前设备不是已识别的理光／宾得无线接口。")
++                }
++                name = model; identity = "ricoh|\(model)|\(props["serialNo"].string ?? props["macAddress"].string ?? config.normalizedHost)"
++                stores = props["storages"].array.compactMap { item in
++                    guard let name = item["name"].string, ["in","sd1","sd2"].contains(name) else { return nil }; return name
++                }
++                if stores.isEmpty { stores = [""] }
++            case .olympus:
++                let xml = try CameraXML.parse(await http.data("/get_caminfo.cgi",headers:["User-Agent":"OI.Share v2"]))
++                guard let model = xml.first("model"), !model.isEmpty,
++                      xml.first("version") != nil || xml.first("serial") != nil else { throw failure("相机未返回有效的奥林巴斯／OM 设备信息。") }
++                name = model; identity = "olympus|\(model)|\(xml.first("serial") ?? config.normalizedHost)"
++            case .panasonic:
++                let content = try CameraHTTPClient(host:config.normalizedHost,port:60606); contentClient = content
++                let xml = try CameraXML.parse(await content.data("/Lumix/Server0/ddd"))
++                guard (xml.first("manufacturer") ?? "").uppercased().contains("PANASONIC") else { throw failure("当前设备未提供松下原生内容目录。") }
++                name = xml.first("friendlyName") ?? xml.first("modelNumber") ?? "LUMIX"
++                identity = "panasonic|\(xml.first("UDN") ?? xml.first("serialNumber") ?? config.normalizedHost)"
++                let deadline = ProcessInfo.processInfo.systemUptime + 45
++                while true {
++                    let data = try await http.data("/cam.cgi",query:query(["mode":"accctrl","type":"req_acc","value":CameraClientIdentity.lumixID,"value2":"CameraConnect"]))
++                    let value = String(decoding:data,as:UTF8.self).trimmingCharacters(in:.whitespacesAndNewlines)
++                    if value.hasPrefix("ok,") || value == "ok" { break }
++                    guard value.hasPrefix("ok_under_research"), ProcessInfo.processInfo.systemUptime < deadline else {
++                        throw failure("松下未接受当前连接。请在机身确认；使用新加密认证的机型尚未接入。")
++                    }
++                    try await Task.sleep(nanoseconds:1_000_000_000)
++                }
++                _ = try await lumix("getstate")
++            }
++            try Task.checkCancellation(); connected = true
++            var capabilities:Set<CameraCapability> = [.connectionProbe,.listAssets,.downloadAssets]
++            if kind == .ricoh { capabilities.formUnion([.liveView,.capture]) }
++            return CameraSession(cameraName:name,connectedHost:config.normalizedHost,port:config.port,capabilities:capabilities,persistentIdentity:identity)
++        } catch { await disconnect(); throw error }
++    }
++    func fetchAssetsPage(for session:CameraSession,resetTraversal:Bool,limit:Int) async throws -> PhotoAssetPage {
++        guard connected,let client else { throw CameraAppError.notConnected }
++        guard !loading else { throw failure("当前照片列表正在读取。") }; loading = true; defer { loading = false }
++        if resetTraversal {
++            pending = []; visited = []; thumbnails = [:]; ricohStorage = [:]
++            switch kind {
++            case .ricoh:
++                containers = stores.map { ($0,0) }
++            case .olympus:
++                _ = try await client.data("/switch_cammode.cgi",query:"mode=play",headers:["User-Agent":"OI.Share v2"])
++                containers = [("/DCIM",0)]
++            case .panasonic:
++                let state = try await lumix("getstate")
++                if state.first("cammode") != "play" {
++                    // 仅在用户请求浏览时切换一次；忙碌时退出，不反复重发模式切换。
++                    guard state.first("rec") != "on", state.first("sd_access") != "on", state.first("interval_status") != "on" else {
++                        throw failure("相机正在拍摄或写卡，暂不切换到照片浏览。")
++                    }
++                    _ = try await lumix("camcmd",type:nil,value:"playmode")
++                    try await Task.sleep(nanoseconds:1_000_000_000)
++                }
++                containers = [("0",0)]
++            }
++        }
++        while pending.count < max(limit,1), !containers.isEmpty {
++            try Task.checkCancellation(); let entry = containers.removeFirst()
++            switch kind {
++            case .ricoh:
++                let json = try await client.json("/v1/photos",query:entry.0.isEmpty ? nil : query(["storage":entry.0]))
++                guard case .array = json["dirs"] else { throw failure("理光照片列表格式不符，未将它当作空相册。") }
++                for dir in json["dirs"].array {
++                    guard let folder = dir["name"].string, validComponent(folder) else { throw failure("相机目录名称无效。") }
++                    for file in dir["files"].array {
++                        guard let name = file.string, validComponent(name), let kind = CameraMediaFormat.kind(for:name) else { continue }
++                        let path = "/v1/photos/\(folder)/\(name)"
++                        let key = path + (entry.0.isEmpty ? "" : "?" + query(["storage":entry.0]))
++                        guard visited.insert(key).inserted else { continue }
++                        ricohStorage[key] = entry.0
++                        // 文件元信息按实际文件读取，不使用列表时间或当前时间代替拍摄时间。
++                        pending.append(PhotoAsset(remoteIdentifier:key,fileName:name,kind:kind,byteSize:0,captureDate:.distantPast,
++                            sourceScope:session.persistentIdentity,directoryIdentifier:"\(entry.0)/\(folder)"))
++                    }
++                }
++            case .olympus:
++                guard visited.insert(entry.0).inserted, entry.0.split(separator:"/").count <= 8 else { continue }
++                let data = try await client.data("/get_imglist.cgi",query:query(["DIR":entry.0]),headers:["User-Agent":"OI.Share v2"])
++                let lines = String(decoding:data,as:UTF8.self).components(separatedBy:.newlines)
++                guard lines.contains(where:{ $0.uppercased().hasPrefix("VER") }) else { throw failure("相机没有返回有效的 OM 照片目录。") }
++                for line in lines {
++                    let columns = line.split(separator:",",omittingEmptySubsequences:false).map { $0.trimmingCharacters(in:.whitespacesAndNewlines) }
++                    guard columns.count >= 6, let size = Int64(columns[2]), let attributes = Int(columns[3]),validComponent(columns[1]) else { continue }
++                    let path = columns[0] + "/" + columns[1]
++                    guard path.hasPrefix("/DCIM/"), !path.components(separatedBy:"/").contains(".."), attributes & 14 == 0 else { continue }
++                    if attributes & 16 != 0 { containers.append((path,0)); continue }
++                    guard let media = CameraMediaFormat.kind(for:columns[1]) else { continue }
++                    pending.append(PhotoAsset(remoteIdentifier:path,fileName:columns[1],kind:media,byteSize:max(0,size),
++                        captureDate:fatDate(Int(columns[4]) ?? 0,Int(columns[5]) ?? 0),sourceScope:session.persistentIdentity,directoryIdentifier:columns[0]))
++                }
++            case .panasonic:
++                try await lumixPage(container:entry.0,start:entry.1,session:session)
++            }
++        }
++        var result = Array(pending.prefix(max(limit,1)))
++        if kind == .ricoh {
++            for i in result.indices {
++                let asset = result[i]; let path = asset.remoteIdentifier.components(separatedBy:"?")[0]
++                let storage = ricohStorage[asset.remoteIdentifier] ?? ""
++                let info = try await client.json(path + "/info",query:storage.isEmpty ? nil : query(["storage":storage]))
++                result[i] = PhotoAsset(remoteIdentifier:asset.remoteIdentifier,fileName:asset.fileName,kind:asset.kind,
++                    byteSize:max(0,info["size"].integer ?? 0),captureDate:CameraHTTPClient.date(info["datetime"].string),
++                    sourceScope:session.persistentIdentity,directoryIdentifier:asset.directoryIdentifier)
++            }
++        }
++        pending.removeFirst(result.count)
++        return PhotoAssetPage(assets:result,hasMore:!pending.isEmpty || !containers.isEmpty)
++    }
++    private func lumixPage(container:String,start:Int,session:CameraSession) async throws {
++        guard let contentClient else { throw CameraAppError.notConnected }
++        let xml = "<?xml version=\"1.0\"?><s:Envelope xmlns:s=\"http://schemas.xmlsoap.org/soap/envelope/\"><s:Body><u:Browse xmlns:u=\"urn:schemas-upnp-org:service:ContentDirectory:1\" xmlns:pana=\"urn:schemas-panasonic-com:pana\"><ObjectID>\(CameraXML.escape(container))</ObjectID><BrowseFlag>BrowseDirectChildren</BrowseFlag><Filter>*</Filter><StartingIndex>\(start)</StartingIndex><RequestedCount>50</RequestedCount><SortCriteria></SortCriteria><pana:X_FromCP>LumixLink2.0</pana:X_FromCP></u:Browse></s:Body></s:Envelope>"
++        let data = try await contentClient.data("/Server0/CDS_control",method:"POST",body:Data(xml.utf8),headers:[
++            "Content-Type":"text/xml; charset=utf-8","SOAPAction":"\"urn:schemas-upnp-org:service:ContentDirectory:1#Browse\"","User-Agent":"Panasonic MIL DLNA CP UPnP/1.0"])
++        let response = try CameraXML.parse(data)
++        guard response.first("errorCode") == nil, let result = response.first("Result"),
++              let count = Int(response.first("NumberReturned") ?? ""), let total = Int(response.first("TotalMatches") ?? ""),
++              count >= 0, total >= 0, total <= 1_000_000, count <= 1000 else { throw failure("松下内容目录格式不符或当前不允许浏览。") }
++        if start+count < total {
++            guard count > 0 else { throw failure("松下内容目录分页没有前进。") }; containers.insert((container,start+count),at:0)
++        }
++        let didl = try CameraXML.parse(Data(result.utf8))
++        for child in didl.all("container") {
++            if let id = child.attributes["id"], visited.insert("dir:"+id).inserted { containers.append((id,0)) }
++        }
++        for item in didl.all("item") {
++            let resources = item.all("res")
++            let preview = resources.first { ($0.attributes["protocolInfo"] ?? "").contains("JPEG_TN") || URL(string:$0.text)?.lastPathComponent.hasPrefix("DT") == true }?.text
++            let title = item.first("title") ?? ""
++            for resource in resources {
++                guard let url = URL(string:resource.text.trimmingCharacters(in:.whitespacesAndNewlines)), url.host == session.connectedHost,
++                      let port = url.port, [80,50001,60606].contains(port), url.scheme == "http",url.user == nil,url.password == nil,
++                      let kind = CameraMediaFormat.kind(for:url.lastPathComponent) else { continue }
++                let name = url.lastPathComponent
++                guard name.hasPrefix("DO") || kind == .raw else { continue }
++                let key = url.absoluteString; guard visited.insert(key).inserted else { continue }
++                var displayName = title.isEmpty ? String(name.dropFirst(name.hasPrefix("DO") ? 2 : 0)) : title
++                if !displayName.contains(".") { displayName += "." + url.pathExtension.uppercased() }
++                else if URL(fileURLWithPath:displayName).pathExtension.lowercased() != url.pathExtension.lowercased() {
++                    displayName = (displayName as NSString).deletingPathExtension + "." + url.pathExtension.uppercased()
++                }
++                if let preview { thumbnails[key] = preview }
++                pending.append(PhotoAsset(remoteIdentifier:key,fileName:displayName,kind:kind,byteSize:Int64(resource.attributes["size"] ?? "") ?? 0,
++                    captureDate:CameraHTTPClient.date(item.first("date")),sourceScope:session.persistentIdentity,directoryIdentifier:container))
++            }
++        }
++    }
++    func downloadThumbnail(_ asset:PhotoAsset,from session:CameraSession) async throws -> Data? {
++        guard let client else { throw CameraAppError.notConnected }
++        switch kind {
++        case .ricoh:
++            var values = ["size":"thumb"]; if let storage = ricohStorage[asset.remoteIdentifier],!storage.isEmpty { values["storage"] = storage }
++            return try await client.thumbnail(asset.remoteIdentifier,query:query(values))
++        case .olympus:
++            return try await client.data("/get_thumbnail.cgi",query:query(["DIR":asset.remoteIdentifier]),headers:["User-Agent":"OI.Share v2"])
++        case .panasonic:
++            guard let value = thumbnails[asset.remoteIdentifier] else { return nil }
++            let (file,path) = try fileClient(value,session:session); return try await file.data(path)
++        }
++    }
++    func downloadAsset(_ asset:PhotoAsset,from session:CameraSession) async throws -> Data {
++        let file = try await downloadAssetToTemporaryFile(asset,from:session); defer { try? FileManager.default.removeItem(at:file) }; return try Data(contentsOf:file)
++    }
++    func downloadAssetToTemporaryFile(_ asset:PhotoAsset,from session:CameraSession) async throws -> URL { try await downloadAssetToTemporaryFile(asset,from:session,onProgress:nil) }
++    func downloadAssetToTemporaryFile(_ asset:PhotoAsset,from session:CameraSession,onProgress:(@Sendable (DownloadTransferProgress) async -> Void)?) async throws -> URL {
++        guard let client else { throw CameraAppError.notConnected }
++        if kind == .panasonic {
++            let (file,path) = try fileClient(asset.remoteIdentifier,session:session)
++            return try await file.download(path,expectedSize:asset.byteSize,progress:onProgress)
++        }
++        return try await client.download(asset.remoteIdentifier,expectedSize:asset.byteSize,progress:onProgress)
++    }
++    private func fileClient(_ value:String,session:CameraSession) throws -> (CameraHTTPClient,String) {
++        guard let url = URL(string:value.trimmingCharacters(in:.whitespacesAndNewlines)),url.host == session.connectedHost,
++              url.scheme == "http",let port = url.port,[80,50001,60606].contains(port),url.user == nil,url.password == nil else { throw failure("相机文件地址不属于当前设备。") }
++        let client = try fileClients[port] ?? CameraHTTPClient(host:session.connectedHost,port:port); fileClients[port] = client
++        return (client,url.absoluteString)
++    }
++    func downloadTransferMode(for asset:PhotoAsset) async -> DownloadThroughputTransferMode { .httpStream }
++    func checkConnection() async throws {
++        guard let client else { throw CameraAppError.notConnected }
++        switch kind { case .ricoh: _ = try await client.json("/v1/props")
++        case .olympus: _ = try await client.data("/get_caminfo.cgi",headers:["User-Agent":"OI.Share v2"])
++        case .panasonic: _ = try await lumix("getstate") }
++    }
++    func consumeDiagnostics() async -> [String] { ["原生无线协议实验支持；未逐机实测。松下／OM 当前仅接入照片浏览与传输。"] }
++    func disconnect() async {
++        connected = false; client?.close(); client = nil; contentClient?.close(); contentClient = nil
++        for value in fileClients.values { value.close() }; fileClients = [:]
++    }
++    private func lumix(_ mode:String,type:String? = nil,value:String? = nil) async throws -> CameraXML.Node {
++        guard let client else { throw CameraAppError.notConnected }
++        var values = ["mode":mode]; if let type { values["type"] = type }; if let value { values["value"] = value }
++        let data = try await client.data("/cam.cgi",query:query(values)); let root = try CameraXML.parse(data)
++        guard root.first("result") == "ok" else { throw failure("松下当前拒绝此操作，请检查机身状态。") }; return root
++    }
++    func startLiveView() async throws { guard kind == .ricoh, connected else { throw failure("当前通道未接入实时取景。") } }
++    func liveViewFrame() async throws -> Data {
++        guard kind == .ricoh,let client else { throw CameraAppError.notConnected }; return try await client.jpegFrame("/v1/liveview")
++    }
++    func stopLiveView() async {}
++    func releaseShutter() async throws {
++        guard kind == .ricoh,let client else { throw failure("当前通道未接入遥控快门。") }
++        let result = try await client.json("/v1/camera/shoot",method:"POST")
++        guard result["captureId"].integer != nil else { throw failure("相机未确认拍摄请求；请查看机身，未自动重发快门。") }
++    }
++    func cameraParameters() async throws -> [CameraParameter] { [] }
++    func setCameraParameter(_ parameter:UInt16,to choice:CameraParameterChoice) async throws { throw failure("此品牌的参数修改尚未接入。") }
++    func newlyCapturedAssets(in session:CameraSession) async throws -> [PhotoAsset] { throw failure("此通道尚未接入边拍边传。") }
++    private func query(_ values:[String:String]) -> String {
++        var components = URLComponents(); components.queryItems = values.sorted { $0.key < $1.key }.map { URLQueryItem(name:$0.key,value:$0.value) }; return components.percentEncodedQuery ?? ""
++    }
++    private func validComponent(_ value:String) -> Bool { !value.isEmpty && value != "." && value != ".." && !value.contains("/") && !value.contains("\\") && !value.contains("?") && !value.contains("#") }
++    private func fatDate(_ date:Int,_ time:Int) -> Date {
++        guard date > 0 else { return .distantPast }; var components = DateComponents()
++        components.year = 1980 + ((date >> 9)&127); components.month = (date >> 5)&15; components.day = date&31
++        components.hour = (time >> 11)&31; components.minute = (time >> 5)&63; components.second = (time&31)*2
++        return Calendar(identifier:.gregorian).date(from:components) ?? .distantPast
++    }
++    private func failure(_ value:String) -> CameraAppError { .unsupportedOperation(value) }
++}
 diff --git a/Services/FujiBluetoothController.swift b/Services/FujiBluetoothController.swift
 new file mode 100644
 index 0000000..ef514b9
@@ -7287,29 +7945,259 @@ index 0000000..ba5e60d
 +        return LiveFrameAnalysis(histogram:histogram,zebraPNG:png)
 +    }
 +}
+diff --git a/Services/NativeCameraBluetooth.swift b/Services/NativeCameraBluetooth.swift
+new file mode 100644
+index 0000000..9692e98
+--- /dev/null
++++ b/Services/NativeCameraBluetooth.swift
+@@ -0,0 +1,201 @@
++@preconcurrency import CoreBluetooth
++import Foundation
++
++struct CameraNetworkCredentials:Sendable { let ssid:String; let password:String }
++
++// 每种机型先核对 GATT 接口再操作；只请求网络启动，不切换相机拍摄模式或修改网络密码。
++@MainActor
++final class NativeCameraBluetooth:NSObject,ObservableObject,@preconcurrency CBCentralManagerDelegate,@preconcurrency CBPeripheralDelegate {
++    static let shared = NativeCameraBluetooth()
++    @Published private(set) var status = ""
++    private var manager:CBCentralManager!
++    private var peer:CBPeripheral?
++    private var characteristics:[CBUUID:CBCharacteristic] = [:]
++    private var reads:[CBUUID:(UUID,CheckedContinuation<Data,Error>)] = [:]
++    private var writes:[CBUUID:(UUID,CheckedContinuation<Void,Error>)] = [:]
++    private var notices:[CBUUID:[Data]] = [:]
++    private var failureText:String?
++    private var busy = false
++    private var expectedDisconnect = false
++    private let ricohWLAN = CBUUID(string:"F37F568F-9071-445D-A938-5441F2E82399")
++    private let ricohStart = CBUUID(string:"9111CDD0-9F01-45C4-A2D4-E09E8FB0424D")
++    private let ricohSSID = CBUUID(string:"90638E5A-E77D-409D-B550-78F7E1CA5AB4")
++    private let ricohPass = CBUUID(string:"0F38279C-FE9E-461B-8596-81287E8C9A81")
++    private static func pana(_ short:String) -> CBUUID { CBUUID(string:short + "-0002A5D5C51B") }
++    private static func canon(_ short:String) -> CBUUID { CBUUID(string:short + "-0000-1000-0000-D8492FFFA821") }
++    func start(_ camera:NearbyCamera) async throws -> CameraNetworkCredentials {
++        guard !busy else { throw error("已有蓝牙连接正在进行。") }; busy = true; defer { busy = false }
++        disconnect()
++        if manager == nil { manager = CBCentralManager(delegate:self,queue:.main) }
++        do {
++            status = "正在准备 \(camera.name) 的蓝牙，请留意机身和系统的配对确认…"
++            try await wait(5) { self.manager.state == .poweredOn }
++            guard let device = manager.retrievePeripherals(withIdentifiers:[camera.id]).first else { throw error("相机蓝牙身份不可用，请重新搜索。") }
++            peer = device; device.delegate = self; manager.connect(device)
++            try await wait(25) { !self.characteristics.isEmpty && self.peer?.services?.allSatisfy({ $0.characteristics != nil }) == true }
++            let credentials:CameraNetworkCredentials
++            switch camera.brand {
++            case .ricoh,.pentax:
++                guard characteristics[ricohStart] != nil,characteristics[ricohSSID] != nil,characteristics[ricohPass] != nil else {
++                    throw error("此机型没有开放已实现的 GR 蓝牙网络接口。请开启相机 Wi-Fi 后使用网络搜索。")
++                }
++                status = "正在读取相机网络信息；首次可能要求输入机身显示的配对码…"
++                let ssid = try text(await read(ricohSSID)); let pass = try text(await read(ricohPass),allowEmpty:true)
++                try await write(ricohStart,Data([1]))
++                credentials = CameraNetworkCredentials(ssid:ssid,password:pass)
++            case .panasonic:
++                let idChar = Self.pana("8D08A420-3213-11E6-8ACA"), nameChar = Self.pana("CD7A71A0-3213-11E6-8F56")
++                let initial = CBUUID(string:"03E23A31-A54C-40FA-A668-DE9ACDC910BB")
++                let ssidChar = Self.pana("E206A5C0-3214-11E6-AFE4"), passChar = CBUUID(string:"C97CF1A5-3C03-4290-8C1B-9E74B9500F54")
++                let typeChar = Self.pana("0D6F1880-3217-11E6-A4CB"), startChar = Self.pana("E182EC40-3213-11E6-AB07")
++                guard [idChar,nameChar,initial,ssidChar,passChar,typeChar,startChar].allSatisfy({ characteristics[$0] != nil }) else {
++                    throw error("此松下机型的蓝牙接口与已实现的 S5 代协议不同，请使用原生 Wi-Fi 连接。")
++                }
++                for key in [Self.pana("4CF487C0-32A7-11E6-A50D"),Self.pana("37701B80-32A7-11E6-BB83"),Self.pana("18345BE1-3217-11E6-B56C"),Self.pana("48669DA0-3217-11E6-B08D"),Self.pana("E182EC43-3213-11E6-AB07"),Self.pana("E182EC41-3213-11E6-AB07"),Self.pana("E182EC42-3213-11E6-AB07")] {
++                    if let characteristic = characteristics[key],characteristic.properties.contains(.notify) || characteristic.properties.contains(.indicate) {
++                        device.setNotifyValue(true,for:characteristic)
++                    }
++                }
++                let hex = CameraClientIdentity.lumixID.replacingOccurrences(of:"-",with:""); var identity = Data()
++                for offset in stride(from:0,to:hex.count,by:2) {
++                    let start = hex.index(hex.startIndex,offsetBy:offset); let end = hex.index(start,offsetBy:2)
++                    guard let byte = UInt8(hex[start..<end],radix:16) else { throw error("松下连接身份无效。") }; identity.append(byte)
++                }
++                try await write(idChar,identity); try await write(nameChar,Data("CameraConnect".utf8))
++                let keyData = try await read(initial); guard keyData.count == 4 else { throw error("松下蓝牙认证响应格式不符。") }
++                let ssid = try text(await read(ssidChar)); let encoded = try await read(passChar)
++                let password = try panasonicPassword(encoded,keyData)
++                try await write(typeChar,Data([1])); try await write(startChar,Data([5]))
++                let ackKey = Self.pana("E182EC41-3213-11E6-AB07")
++                if characteristics[ackKey]?.isNotifying == true {
++                    let ack = try await notification(ackKey,seconds:10)
++                    guard ack.first == 0 else { throw error("松下拒绝启动 Wi-Fi，请使用机身无线连接菜单。") }
++                }
++                credentials = CameraNetworkCredentials(ssid:ssid,password:password)
++            case .canon:
++                let start = Self.canon("00010006"), finish = Self.canon("0001000A"), network = Self.canon("00020002")
++                let ssid = Self.canon("00020004"), pass = Self.canon("00020006")
++                guard [start,finish,network,ssid,pass].allSatisfy({ characteristics[$0] != nil }) else { throw error("此佳能机型没有开放当前已实现的手机蓝牙网络接口。") }
++                try await subscribe(start); try await subscribe(network)
++                let key = "canonBluetoothRegistered."+camera.id.uuidString
++                if !UserDefaults.standard.bool(forKey:key) {
++                    try await write(start,Data([1])+Data("CameraConnect".utf8))
++                    let reply = try await notification(start,seconds:45)
++                    guard reply.first == 2 else { throw error("佳能机身未接受配对。") }
++                    let identity = clientID(camera.id)
++                    try await write(finish,Data([3])+identity)
++                    try await write(finish,Data([4])+Data("CameraConnect".utf8)); try await write(finish,Data([5,1]))
++                }
++                try await write(network,Data([0x0a])); _ = try await notification(network,seconds:15)
++                let networkName = try text(await read(ssid)); let password = try text(await read(pass),allowEmpty:true)
++                try await write(finish,Data([1])); UserDefaults.standard.set(true,forKey:key)
++                // 部分机型启动热点会主动断开 BLE；写入仍需确认，不能把断开当作成功。
++                expectedDisconnect = true; try await write(network,Data([1]))
++                credentials = CameraNetworkCredentials(ssid:networkName,password:password)
++            default: throw error("该品牌的蓝牙热点启动尚未接入。")
++            }
++            try Task.checkCancellation(); status = "已请求启动相机网络，准备加入 Wi-Fi；之后仍需完成相机协议握手。"
++            return credentials
++        } catch { status = "蓝牙网络启动未完成：\(error.localizedDescription)"; disconnect(); throw error }
++    }
++    func disconnect() {
++        if let peer { manager?.cancelPeripheralConnection(peer) }; peer = nil; characteristics = [:]; notices = [:]; failureText = nil; expectedDisconnect = false
++        let oldReads = reads; reads = [:]; for pending in oldReads.values { pending.1.resume(throwing:CancellationError()) }
++        let oldWrites = writes; writes = [:]; for pending in oldWrites.values { pending.1.resume(throwing:CancellationError()) }
++    }
++    func centralManagerDidUpdateState(_ central:CBCentralManager) {
++        if central.state == .unauthorized || central.state == .unsupported || central.state == .poweredOff { failureText = "蓝牙未开启、未授权或不可用。" }
++    }
++    func centralManager(_ central:CBCentralManager,didConnect peripheral:CBPeripheral) { if peripheral === peer { peripheral.discoverServices(nil) } }
++    func centralManager(_ central:CBCentralManager,didFailToConnect peripheral:CBPeripheral,error:Error?) { if peripheral === peer { failureText = "无法连接已选择的相机蓝牙。" } }
++    func centralManager(_ central:CBCentralManager,didDisconnectPeripheral peripheral:CBPeripheral,error:Error?) {
++        guard peripheral === peer else { return }; if !expectedDisconnect { failureText = "相机蓝牙已断开，请在机身确认配对。" }
++        let old = reads; reads = [:]; for pending in old.values { pending.1.resume(throwing:self.error("相机在读取网络信息时断开。")) }
++        let oldWrites = writes; writes = [:]; for pending in oldWrites.values { pending.1.resume(throwing:self.error("相机未确认蓝牙写入。")) }
++    }
++    func peripheral(_ peripheral:CBPeripheral,didDiscoverServices error:Error?) {
++        guard peripheral === peer else { return }
++        guard error == nil,let services = peripheral.services,!services.isEmpty else { failureText = "相机没有提供可读取的蓝牙服务。"; return }
++        for service in services { peripheral.discoverCharacteristics(nil,for:service) }
++    }
++    func peripheral(_ peripheral:CBPeripheral,didDiscoverCharacteristicsFor service:CBService,error:Error?) {
++        guard peripheral === peer else { return }; if error != nil { failureText = "读取相机蓝牙接口失败。"; return }
++        for characteristic in service.characteristics ?? [] { characteristics[characteristic.uuid] = characteristic }
++    }
++    func peripheral(_ peripheral:CBPeripheral,didUpdateNotificationStateFor characteristic:CBCharacteristic,error:Error?) {
++        guard peripheral === peer else { return }; if error != nil { failureText = "相机拒绝蓝牙通知订阅。" }
++    }
++    func peripheral(_ peripheral:CBPeripheral,didUpdateValueFor characteristic:CBCharacteristic,error:Error?) {
++        guard peripheral === peer else { return }
++        if let pending = reads.removeValue(forKey:characteristic.uuid) {
++            if error != nil { pending.1.resume(throwing:self.error("相机拒绝读取网络信息；请完成机身配对确认。")) }
++            else { pending.1.resume(returning:characteristic.value ?? Data()) }
++        } else if let value = characteristic.value {
++            notices[characteristic.uuid,default:[]].append(value)
++            if (notices[characteristic.uuid]?.count ?? 0) > 8 { notices[characteristic.uuid]?.removeFirst() }
++        }
++    }
++    func peripheral(_ peripheral:CBPeripheral,didWriteValueFor characteristic:CBCharacteristic,error:Error?) {
++        guard peripheral === peer,let pending = writes.removeValue(forKey:characteristic.uuid) else { return }
++        if error != nil { pending.1.resume(throwing:self.error("相机拒绝网络启动指令。")) } else { pending.1.resume() }
++    }
++    private func read(_ key:CBUUID) async throws -> Data {
++        try Task.checkCancellation()
++        guard let peer,let characteristic = characteristics[key],characteristic.properties.contains(.read),reads[key] == nil else { throw error("所需蓝牙读取接口不可用。") }
++        let id = UUID()
++        let result = try await withCheckedThrowingContinuation { (continuation:CheckedContinuation<Data,Error>) in
++            reads[key] = (id,continuation); peer.readValue(for:characteristic)
++            Task { try? await Task.sleep(nanoseconds:20_000_000_000); if reads[key]?.0 == id { reads.removeValue(forKey:key)?.1.resume(throwing:error("读取相机网络信息超时。")) } }
++        }
++        try Task.checkCancellation(); return result
++    }
++    private func write(_ key:CBUUID,_ data:Data) async throws {
++        try Task.checkCancellation()
++        guard let peer,let characteristic = characteristics[key],characteristic.properties.contains(.write),writes[key] == nil else { throw error("所需蓝牙写入接口不可用。") }
++        let id = UUID()
++        try await withCheckedThrowingContinuation { (continuation:CheckedContinuation<Void,Error>) in
++            writes[key] = (id,continuation); peer.writeValue(data,for:characteristic,type:.withResponse)
++            Task { try? await Task.sleep(nanoseconds:15_000_000_000); if writes[key]?.0 == id { writes.removeValue(forKey:key)?.1.resume(throwing:error("相机未及时确认网络启动指令。")) } }
++        }
++        try Task.checkCancellation()
++    }
++    private func subscribe(_ key:CBUUID) async throws {
++        guard let peer,let characteristic = characteristics[key],characteristic.properties.contains(.notify) || characteristic.properties.contains(.indicate) else { throw error("相机没有开放必要通知接口。") }
++        peer.setNotifyValue(true,for:characteristic); try await wait(10) { characteristic.isNotifying }
++    }
++    private func notification(_ key:CBUUID,seconds:TimeInterval) async throws -> Data {
++        try await wait(seconds) { !(self.notices[key] ?? []).isEmpty }; return notices[key]!.removeFirst()
++    }
++    private func wait(_ seconds:TimeInterval,until ready:()->Bool) async throws {
++        let deadline = ProcessInfo.processInfo.systemUptime + seconds
++        while !ready() {
++            try Task.checkCancellation(); if let failureText { throw error(failureText) }
++            guard ProcessInfo.processInfo.systemUptime < deadline else { throw error("蓝牙配对或网络操作超时，此机型可能使用不同的认证流程。") }
++            try await Task.sleep(nanoseconds:100_000_000)
++        }; try Task.checkCancellation()
++    }
++    private func text(_ data:Data,allowEmpty:Bool = false) throws -> String {
++        let prefix = data.prefix { $0 != 0 }
++        guard let value = String(data:prefix,encoding:.utf8),allowEmpty || !value.isEmpty else { throw error("相机返回的网络信息无法读取。") }; return value
++    }
++    private func clientID(_ id:UUID) -> Data {
++        let key = "canonBluetoothClient."+id.uuidString
++        if let data = UserDefaults.standard.data(forKey:key),data.count == 16 { return data }
++        let uuid = UUID().uuid; let data = withUnsafeBytes(of:uuid) { Data($0) }; UserDefaults.standard.set(data,forKey:key); return data
++    }
++    // 松下按 4 字节分组混淆热点密码，算法参考 MIT 的 lumix-remote，保留原许可。
++    private func panasonicPassword(_ encoded:Data,_ keyData:Data) throws -> String {
++        guard !encoded.isEmpty,encoded.count % 4 == 0,keyData.count == 4 else { throw error("松下热点密码编码尚未支持。") }
++        let raw = [UInt8](encoded); var key = keyData.reduce(UInt32(0)) { ($0 << 8)|UInt32($1) }
++        if key == 0 { key = 0x9032782c }; var bytes:[UInt8] = []
++        for offset in stride(from:0,to:raw.count,by:4) {
++            var value = raw[offset..<offset+4].reduce(UInt32(0)) { ($0 << 8)|UInt32($1) } ^ key
++            let decoded = (0..<4).map { _ -> UInt8 in defer { value >>= 8 }; return UInt8(truncatingIfNeeded:value) }
++            bytes += offset == 0 ? Array(decoded.dropFirst()) : decoded
++        }
++        let end = bytes.firstIndex(of:0xff) ?? bytes.count
++        guard let password = String(data:Data(bytes[..<end]),encoding:.isoLatin1) else { throw error("松下热点密码无法解码。") }
++        return password.trimmingCharacters(in:CharacterSet(charactersIn:"\0"))
++    }
++    private func error(_ value:String) -> CameraAppError { .unsupportedOperation(value) }
++}
 diff --git a/Services/NearbyCameraDiscovery.swift b/Services/NearbyCameraDiscovery.swift
 new file mode 100644
-index 0000000..a6b5b2d
+index 0000000..37c208b
 --- /dev/null
 +++ b/Services/NearbyCameraDiscovery.swift
-@@ -0,0 +1,237 @@
+@@ -0,0 +1,273 @@
 +@preconcurrency import CoreBluetooth
 +import Foundation
 +import Security
 +
 +enum NearbyCameraBrand: String, Codable, Sendable {
-+    case fuji, nikon, sony, canon
-+    var title: String { switch self { case .fuji: return "富士"; case .nikon: return "尼康"; case .sony: return "索尼"; case .canon: return "佳能" } }
-+    var mode: CameraTransportMode { switch self {
++    case fuji, nikon, sony, canon, panasonic, ricoh, pentax, olympus, leica, hasselblad, unknown
++    var title: String { switch self {
++        case .fuji: return "富士"; case .nikon: return "尼康"; case .sony: return "索尼"; case .canon: return "佳能"
++        case .panasonic: return "松下"; case .ricoh: return "理光"; case .pentax: return "宾得"
++        case .olympus: return "奥林巴斯／OM"; case .leica: return "徕卡"; case .hasselblad: return "哈苏"; case .unknown: return "身份待确认"
++    } }
++    var mode: CameraTransportMode? { switch self {
 +        case .fuji: return .experimentalFuji; case .nikon: return .experimentalNikon
 +        case .sony: return .experimentalSony; case .canon: return .experimentalCanon
++        case .panasonic: return .experimentalPanasonic; case .ricoh, .pentax: return .experimentalRicoh
++        case .olympus: return .experimentalOlympus; case .leica, .hasselblad, .unknown: return nil
 +    } }
 +}
-+struct NearbyCamera: Identifiable, Codable, Equatable {
++struct NearbyCamera: Identifiable, Codable, Equatable, Sendable {
 +    var id: UUID
 +    var name: String
 +    var brand: NearbyCameraBrand
 +    var signal: Int?
++    var connectionHost: String?
++    var servicePort: Int?
++    var networkMode: CameraTransportMode?
++    var usesBluetooth: Bool { connectionHost == nil }
++    var connectionHint: String {
++        if let host = connectionHost { return "当前网络 · \(host):\(servicePort ?? 80) · 选中后校验设备身份" }
++        switch brand {
++        case .fuji: return "蓝牙获取 Wi-Fi 并自动加入（实验）"
++        case .nikon: return "蓝牙请求开启 Wi-Fi（实验，首次保存网络）"
++        case .ricoh, .pentax: return "公开的 GR 系列蓝牙热点接口（实验，按实际服务判断）"
++        case .panasonic: return "S5 代蓝牙热点接口（实验，新机型可能不兼容）"
++        case .sony: return "蓝牙候选；本版使用相机 PC 遥控 Wi-Fi，尚未接入手机蓝牙启动"
++        case .canon: return "蓝牙候选；本版照片通道为 CCAPI，需机身启用"
++        case .olympus: return "蓝牙候选；本版使用原生 Wi-Fi 文件通道"
++        case .leica, .hasselblad, .unknown: return "发现候选设备；本版尚未接入该协议"
++        }
++    }
 +}
 +
 +@MainActor
@@ -7319,6 +8207,8 @@ index 0000000..a6b5b2d
 +    @Published private(set) var saved: [NearbyCamera] = []
 +    @Published private(set) var isScanning = false
 +    @Published private(set) var status = "开启相机蓝牙后，搜索附近可发现的相机。"
++    @Published private(set) var bluetoothStatus = ""
++    @Published private(set) var networkStatus = ""
 +    @Published private(set) var nikonStatus = "尼康蓝牙唤醒为实验支持，首次可能需要在机身确认配对。"
 +    private(set) var selectedNikonIdentifier: String?
 +    private var central: CBCentralManager!
@@ -7347,26 +8237,27 @@ index 0000000..a6b5b2d
 +    }
 +    func scan() {
 +        guard !isScanning else { return }
-+        nearby = []; status = "正在准备蓝牙搜索…"; isScanning = true; scanID = UUID()
++        nearby = []; status = "正在同时搜索蓝牙与当前 Wi-Fi 网络，不需要选择品牌…"; isScanning = true; scanID = UUID()
++        let id = scanID
++        CameraNetworkDiscovery.shared.start(saved:saved,onFound:{ [weak self] item in self?.merge(item) },onStatus:{ [weak self] value in self?.networkStatus = value })
++        Task {
++            try? await Task.sleep(nanoseconds:35_000_000_000)
++            guard scanID == id, isScanning else { return }; stopScan()
++            status = nearby.isEmpty ? "未发现可识别相机。请开启相机配对或加入相机 Wi-Fi 后重新搜索。" : "发现 \(nearby.count) 个连接入口，请选择连接。"
++        }
 +        manager()
 +        if central.state == .poweredOn { startScan() }
 +        else if central.state == .poweredOff || central.state == .unauthorized || central.state == .unsupported { unavailable() }
 +    }
 +    private func startScan() {
 +        guard isScanning, central.state == .poweredOn else { return }
-+        status = "正在搜索附近相机，请选择要连接的一台…"
++        bluetoothStatus = "正在搜索低功耗蓝牙广播…"
 +        central.scanForPeripherals(withServices:nil,options:[CBCentralManagerScanOptionAllowDuplicatesKey:true])
-+        let id = scanID
-+        Task {
-+            try? await Task.sleep(nanoseconds:20_000_000_000)
-+            guard scanID == id, isScanning else { return }; stopScan()
-+            status = nearby.isEmpty ? "未发现相机。请开启相机蓝牙，首次使用时进入配对界面，然后重新搜索。" : "找到 \(nearby.count) 台附近相机，请选择连接。"
-+        }
 +    }
-+    func stopScan() { central?.stopScan(); isScanning = false; scanID = nil }
++    func stopScan() { central?.stopScan(); CameraNetworkDiscovery.shared.stop(); isScanning = false; scanID = nil }
 +    private func unavailable() {
-+        stopScan()
-+        status = central.state == .unauthorized ? "蓝牙访问未获允许，请在系统设置中允许本应用使用蓝牙。" : "蓝牙未开启或不可用，请开启手机与相机蓝牙。"
++        central?.stopScan()
++        bluetoothStatus = central.state == .unauthorized ? "蓝牙未获授权，仍会搜索当前网络。可在系统设置允许蓝牙。" : "蓝牙未开启或不可用，仍会搜索当前网络。"
 +    }
 +    func remember(_ item: NearbyCamera) {
 +        var value = item; value.signal = nil
@@ -7387,11 +8278,21 @@ index 0000000..a6b5b2d
 +        if services.contains(Self.nikonService) || (manufacturer.count >= 2 && manufacturer[0] == 0x99 && manufacturer[1] == 0x03) || upper.contains("NIKON") || upper.hasPrefix("Z6_") || upper.hasPrefix("Z6III") { brand = .nikon }
 +        else if services.contains(CBUUID(string:"91F1DE68-DFF6-466E-8B65-FF13B0F16FB8")) || upper.contains("FUJI") || upper.hasPrefix("X-") || upper.hasPrefix("X100") || upper.hasPrefix("GFX") { brand = .fuji }
 +        else if upper.contains("SONY") || upper.hasPrefix("ILCE-") || upper.hasPrefix("ILME-") || upper.hasPrefix("ZV-") || upper.hasPrefix("DSC-") { brand = .sony }
-+        else if upper.contains("CANON") || upper.hasPrefix("EOS") || upper.hasPrefix("POWERSHOT") { brand = .canon }
++        else if services.contains(CBUUID(string:"00010000-0000-1000-0000-D8492FFFA821")) || upper.contains("CANON") || upper.hasPrefix("EOS") || upper.hasPrefix("POWERSHOT") { brand = .canon }
++        else if services.contains(CBUUID(string:"054AC620-3214-11E6-AC0D-0002A5D5C51B")) || upper.contains("LUMIX") || upper.hasPrefix("DC-") || upper.hasPrefix("DMC-") { brand = .panasonic }
++        else if services.contains(CBUUID(string:"F37F568F-9071-445D-A938-5441F2E82399")) || upper.contains("RICOH") || upper.hasPrefix("GR_") || upper.hasPrefix("GR III") || upper.hasPrefix("GR IV") { brand = .ricoh }
++        else if upper.contains("PENTAX") || upper.hasPrefix("K-3") { brand = .pentax }
++        else if upper.contains("OLYMPUS") || upper.contains("OM SYSTEM") || upper.hasPrefix("OM-1") || upper.hasPrefix("OM-3") || upper.hasPrefix("OM-5") { brand = .olympus }
++        else if upper.contains("LEICA") { brand = .leica }
++        else if upper.contains("HASSELBLAD") || upper.hasPrefix("X2D") || upper.hasPrefix("CFV 100") { brand = .hasselblad }
 +        else { return }
 +        if brand == .fuji { FujiBluetoothController.shared.rememberDiscovery(peripheral.identifier,manufacturer:Data(manufacturer)) }
 +        devices[peripheral.identifier] = peripheral
 +        let item = NearbyCamera(id:peripheral.identifier,name:name.isEmpty ? "\(brand.title)相机" : name,brand:brand,signal:RSSI.intValue == 127 ? nil : RSSI.intValue)
++        merge(item)
++    }
++    private func merge(_ item:NearbyCamera) {
++        guard isScanning else { return }
 +        if let index = nearby.firstIndex(where: { $0.id == item.id }) { nearby[index] = item } else { nearby.append(item) }
 +        nearby.sort { ($0.signal ?? -127) > ($1.signal ?? -127) }
 +    }
