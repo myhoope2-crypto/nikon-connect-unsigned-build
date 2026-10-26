@@ -1673,12 +1673,13 @@ index 10f1bca..02a218f 100644
  
 diff --git a/Domain/WorkflowLibrary.swift b/Domain/WorkflowLibrary.swift
 new file mode 100644
-index 0000000..8158755
+index 0000000..c905bc1
 --- /dev/null
 +++ b/Domain/WorkflowLibrary.swift
-@@ -0,0 +1,166 @@
+@@ -0,0 +1,181 @@
 +import Foundation
 +import SwiftUI
++import ImageIO
 +
 +struct SavedCameraValue: Codable, Identifiable, Sendable {
 +    var kind: String
@@ -1804,7 +1805,7 @@ index 0000000..8158755
 +        let safe = sanitize(prefix.isEmpty ? project.name : prefix)
 +        let folder = directory.appendingPathComponent(safe + "-" + UUID().uuidString.prefix(8), isDirectory:true)
 +        try FileManager.default.createDirectory(at:folder, withIntermediateDirectories:true)
-+        var csv = "序号,原文件名,导出文件名,拍摄时间,文件大小,相机,状态\n"
++        var csv = "序号,原文件名,导出文件名,拍摄时间,文件大小,相机,状态,曝光秒数,光圈,ISO,焦距毫米,曝光补偿,镜头型号\n"
 +        var pairs: [String:Int] = [:], number = 0
 +        for photo in project.photos.sorted(by: { $0.captureDate < $1.captureDate }) {
 +            try Task.checkCancellation()
@@ -1813,18 +1814,20 @@ index 0000000..8158755
 +            let index = pairs[key]!
 +            let ext = (photo.originalName as NSString).pathExtension.lowercased().filter { $0.isASCII && $0.isLetter || $0.isNumber }
 +            let name = String(format:"%@_%04d",safe,index) + (ext.isEmpty ? "" : "." + ext)
++            let record = records.first(where: { $0.assetFingerprint == photo.id })
++            let metadata = record.map { imageMetadata($0.savedURL) } ?? Array(repeating:"",count:6)
 +            var state = metadataOnly ? "仅导出清单" : "未下载"
-+            if !metadataOnly, let record = records.first(where: { $0.assetFingerprint == photo.id }) {
++            if !metadataOnly, let record {
 +                let destination = folder.appendingPathComponent(name)
 +                // 同组同扩展名也不能覆盖；保留唯一后缀。
 +                let target = FileManager.default.fileExists(atPath:destination.path)
 +                    ? folder.appendingPathComponent((name as NSString).deletingPathExtension + "-" + photo.id.prefix(8) + "." + ext) : destination
 +                if FileManager.default.fileExists(atPath:record.savedURL.path) {
 +                    try FileManager.default.copyItem(at:record.savedURL, to:target); state = "已复制"
-+                    csv += row([String(index),photo.originalName,target.lastPathComponent,ISO8601DateFormatter().string(from:photo.captureDate),String(photo.byteSize),photo.camera,state]); continue
++                    csv += row([String(index),photo.originalName,target.lastPathComponent,ISO8601DateFormatter().string(from:photo.captureDate),String(photo.byteSize),photo.camera,state] + metadata); continue
 +                } else { state = "本地文件不存在" }
 +            }
-+            csv += row([String(index),photo.originalName,"",ISO8601DateFormatter().string(from:photo.captureDate),String(photo.byteSize),photo.camera,state])
++            csv += row([String(index),photo.originalName,"",ISO8601DateFormatter().string(from:photo.captureDate),String(photo.byteSize),photo.camera,state] + metadata)
 +        }
 +        try Data(("\u{feff}" + csv).utf8).write(to:folder.appendingPathComponent("照片清单.csv"), options:.atomic)
 +        let e = JSONEncoder(); e.outputFormatting = [.prettyPrinted,.sortedKeys]
@@ -1841,6 +1844,18 @@ index 0000000..8158755
 +            let safe = ["=","+","-","@"].contains(value.first.map(String.init) ?? "") ? "'" + value : value
 +            return "\"" + safe.replacingOccurrences(of:"\"",with:"\"\"") + "\""
 +        }.joined(separator:",") + "\n"
++    }
++    private func imageMetadata(_ url: URL) -> [String] {
++        guard let source = CGImageSourceCreateWithURL(url as CFURL,[kCGImageSourceShouldCache:false] as CFDictionary),
++              let properties = CGImageSourceCopyPropertiesAtIndex(source,0,nil) as? [String:Any],
++              let exif = properties[kCGImagePropertyExifDictionary as String] as? [String:Any] else { return Array(repeating:"",count:6) }
++        func text(_ key: CFString) -> String {
++            guard let value = exif[key as String] else { return "" }
++            if let values = value as? [NSNumber] { return values.map(\.stringValue).joined(separator:"/") }
++            return String(describing:value)
++        }
++        return [text(kCGImagePropertyExifExposureTime),text(kCGImagePropertyExifFNumber),text(kCGImagePropertyExifISOSpeedRatings),
++                text(kCGImagePropertyExifFocalLength),text(kCGImagePropertyExifExposureBiasValue),text(kCGImagePropertyExifLensModel)]
 +    }
 +}
 diff --git a/Features/ConnectionSetup/CameraLiveSettingsView.swift b/Features/ConnectionSetup/CameraLiveSettingsView.swift
@@ -2204,10 +2219,10 @@ index 0000000..ac33892
 +}
 diff --git a/Features/ConnectionSetup/CameraRemoteViewModel.swift b/Features/ConnectionSetup/CameraRemoteViewModel.swift
 new file mode 100644
-index 0000000..5c83b75
+index 0000000..f264347
 --- /dev/null
 +++ b/Features/ConnectionSetup/CameraRemoteViewModel.swift
-@@ -0,0 +1,543 @@
+@@ -0,0 +1,560 @@
 +import Foundation
 +import SwiftUI
 +import UIKit
@@ -2356,9 +2371,11 @@ index 0000000..5c83b75
 +    }
 +    func shutter() {
 +        guard foreground, !isBusy, !controlInFlight, !isStoppingLive, !isScheduling, supports(.capture), let remote, let sessionID = connection.activeSession?.id else { return }
++        guard !downloads.isDownloading, !gallery.isLoading else { status = "请先停止照片读取或下载，再遥控拍摄。"; return }
++        let lease = acquireControlLease(); guard lease.allowed else { return }
 +        isBusy = true; controlInFlight = true
 +        Task {
-+            defer { controlInFlight = false; isBusy = false }
++            defer { controlInFlight = false; isBusy = false; if let id = lease.id { connection.sessionCoordinator.releaseCameraUse(id) } }
 +            do {
 +                try await waitForFrameBoundary(sessionID)
 +                try await remote.releaseShutter()
@@ -2372,6 +2389,11 @@ index 0000000..5c83b75
 +            let message = shell.userFacingMessage(for: error)
 +            shell.appendLog(message); liveAlert = AlertContext(title: "出现问题", message: message)
 +        } else { shell.handle(error) }
++    }
++    private func acquireControlLease() -> (allowed: Bool, id: UUID?) {
++        if liveTask != nil { return (true,nil) }
++        if let id = connection.sessionCoordinator.acquireCameraUse("相机参数或快门控制") { return (true,id) }
++        status = "相机正在执行其他操作，请稍后重试。"; return (false,nil)
 +    }
 +    private func waitForFrameBoundary(_ sessionID: UUID) async throws {
 +        while frameInFlight {
@@ -2410,9 +2432,10 @@ index 0000000..5c83b75
 +        guard !downloads.isDownloading, !gallery.isLoading else {
 +            parameterStatus = "请等待照片读取或下载结束后再刷新参数。"; return
 +        }
++        let lease = acquireControlLease(); guard lease.allowed else { return }
 +        isBusy = true; controlInFlight = true; autoParameterRefresh = true
 +        Task {
-+            defer { controlInFlight = false; isBusy = false }
++            defer { controlInFlight = false; isBusy = false; if let id = lease.id { connection.sessionCoordinator.releaseCameraUse(id) } }
 +            do { try await waitForFrameBoundary(sessionID) } catch { return }
 +            await readParameters(remote, sessionID: sessionID, reportErrors: true)
 +        }
@@ -2425,9 +2448,10 @@ index 0000000..5c83b75
 +            parameterStatus = "请等待照片读取或下载结束后再调整参数。"; return
 +        }
 +        if current.current.data == choice.data { return }
++        let lease = acquireControlLease(); guard lease.allowed else { return }
 +        isBusy = true; controlInFlight = true; parameterStatus = "正在设置\(current.title)，等待相机确认…"
 +        Task {
-+            defer { controlInFlight = false; isBusy = false }
++            defer { controlInFlight = false; isBusy = false; if let id = lease.id { connection.sessionCoordinator.releaseCameraUse(id) } }
 +            do {
 +                try await waitForFrameBoundary(sessionID)
 +                try await remote.setCameraParameter(parameter, to: choice)
@@ -2502,9 +2526,10 @@ index 0000000..5c83b75
 +        guard preset.brand == presetBrand, CameraSettingCatalog.compact(preset.model) == CameraSettingCatalog.compact(cameraModel) else {
 +            presetStatus = "此预设来自 \(preset.model)，当前为 \(cameraModel)。型号不匹配，未写入。"; return
 +        }
++        let lease = acquireControlLease(); guard lease.allowed else { return }
 +        isBusy = true; controlInFlight = true
 +        Task {
-+            defer { isBusy = false; controlInFlight = false }
++            defer { isBusy = false; controlInFlight = false; if let id = lease.id { connection.sessionCoordinator.releaseCameraUse(id) } }
 +            var applied = 0, skipped: [String] = []
 +            do {
 +                try await waitForFrameBoundary(sessionID)
@@ -2659,7 +2684,14 @@ index 0000000..5c83b75
 +        if let remote { Task { await remote.stopCaptureWatch() } }
 +    }
 +    private func persistRecoveryCheckpoint() {
-+        guard let identity = watchBaselineIdentity, let fingerprints = watchKnownFingerprints else { return }
++        guard let identity = watchBaselineIdentity else { return }
++        guard let fingerprints = watchKnownFingerprints else {
++            if FileManager.default.fileExists(atPath:CaptureRecoveryCheckpoint.url.path) {
++                do { try FileManager.default.removeItem(at:CaptureRecoveryCheckpoint.url) }
++                catch { shell.appendLog("旧补传基线无法移除：\(error.localizedDescription)") }
++            }
++            return
++        }
 +        do { try CaptureRecoveryCheckpoint(identity:identity,fingerprints:fingerprints).save() }
 +        catch { shell.appendLog("补传基线保存失败，应用重启后不能恢复此基线：\(error.localizedDescription)") }
 +    }
@@ -3408,7 +3440,7 @@ index 0000000..77472e8
 +    }
 +}
 diff --git a/Features/Downloads/DownloadManagerViewModel.swift b/Features/Downloads/DownloadManagerViewModel.swift
-index ed0c071..2084e4b 100644
+index ed0c071..c7ba360 100644
 --- a/Features/Downloads/DownloadManagerViewModel.swift
 +++ b/Features/Downloads/DownloadManagerViewModel.swift
 @@ -32,6 +32,8 @@ final class DownloadManagerViewModel: ObservableObject {
@@ -3479,7 +3511,7 @@ index ed0c071..2084e4b 100644
              return
          }
  
-+        guard queueState.status == .running, sessionCoordinator.hasActiveSession else { return }
++        guard queueState.status == .running, sessionCoordinator.hasActiveSession, sessionCoordinator.exclusiveUseReason == nil else { return }
          queueRunnerTask = Task { [weak self] in
              await self?.runQueue()
          }
@@ -3490,7 +3522,18 @@ index ed0c071..2084e4b 100644
      func pauseQueue() {
          if let queueRunnerTask {
              queueStopReason = .pause
-@@ -373,7 +406,7 @@ final class DownloadManagerViewModel: ObservableObject {
+@@ -355,6 +388,10 @@ final class DownloadManagerViewModel: ObservableObject {
+         }
+ 
+         while !Task.isCancelled {
++            if let reason = sessionCoordinator.exclusiveUseReason {
++                queueState.status = .paused; queueState.activeJobID = nil; syncPublishedState()
++                shell.appendLog("相机正在\(reason)，已暂停下载队列；结束后可继续。"); try? await persistQueueState(); return
++            }
+             guard let job = nextRunnableJob() else {
+                 queueState.activeJobID = nil
+                 queueState.status = .idle
+@@ -373,7 +410,7 @@ final class DownloadManagerViewModel: ObservableObject {
                  updateJob(job.id) { queuedJob in
                      queuedJob.status = .interrupted
                      queuedJob.updatedAt = Date()
@@ -3499,7 +3542,7 @@ index ed0c071..2084e4b 100644
                  }
                  queueState.activeJobID = nil
                  queueState.status = .interrupted
-@@ -386,10 +419,19 @@ final class DownloadManagerViewModel: ObservableObject {
+@@ -386,10 +423,19 @@ final class DownloadManagerViewModel: ObservableObject {
                  return
              }
  
@@ -3519,7 +3562,7 @@ index ed0c071..2084e4b 100644
                  queuedJob.startedAt = queuedJob.startedAt ?? Date()
                  queuedJob.updatedAt = Date()
                  queuedJob.errorMessage = nil
-@@ -445,7 +487,10 @@ final class DownloadManagerViewModel: ObservableObject {
+@@ -445,7 +491,10 @@ final class DownloadManagerViewModel: ObservableObject {
                  currentTemporaryURL = temporaryURL
  
                  let measuredSize = Self.fileSize(at: temporaryURL)
@@ -3531,7 +3574,7 @@ index ed0c071..2084e4b 100644
                  finalizeProgress(forJobID: job.id, finalSize: finalSize)
  
                  var record = try await downloadStore.storeDownloadedFile(at: temporaryURL, from: job.asset)
-@@ -501,6 +546,10 @@ final class DownloadManagerViewModel: ObservableObject {
+@@ -501,6 +550,10 @@ final class DownloadManagerViewModel: ObservableObject {
                  }
              } catch {
                  cleanupTemporaryDownloadFile()
@@ -3542,7 +3585,7 @@ index ed0c071..2084e4b 100644
                  let mappedStatus = interruptibleStatus(for: error)
                  let message = shell.userFacingMessage(for: error)
                  updateJob(job.id) { queuedJob in
-@@ -579,7 +628,7 @@ final class DownloadManagerViewModel: ObservableObject {
+@@ -579,7 +632,7 @@ final class DownloadManagerViewModel: ObservableObject {
          }
      }
  
@@ -3551,7 +3594,7 @@ index ed0c071..2084e4b 100644
          guard let activeJobID = queueState.activeJobID else { return }
          queueStopReason = .interrupted(reason)
          updateJob(activeJobID) { job in
-@@ -593,7 +642,9 @@ final class DownloadManagerViewModel: ObservableObject {
+@@ -593,7 +646,9 @@ final class DownloadManagerViewModel: ObservableObject {
      }
  
      private func applyProgress(_ transportProgress: DownloadTransferProgress, toJobID jobID: UUID) {
