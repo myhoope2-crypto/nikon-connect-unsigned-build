@@ -1,0 +1,158 @@
+# Nikon_connect iOS 15.4 / 15.4.1 兼容构建，手动触发。
+# 配套补丁位于构建仓库 patches/NikonConnect-ios15-v0.3.3-trollstore.patch。
+name: Nikon Connect 巨魔连接进度与后台传输实验版
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: 编译 iOS 15.4 兼容真机包
+    runs-on: macos-15-intel
+    timeout-minutes: 55
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: 获取构建配置和兼容补丁
+        uses: actions/checkout@v4
+        with:
+          path: build-config
+          persist-credentials: false
+
+      - name: 获取固定版本的原始源码
+        uses: actions/checkout@v4
+        with:
+          repository: yyhhzzzzz/Nikon_connect
+          ref: 13d6cb1715cc54d48dc1e3a462ef277f4052efaf
+          path: source
+          persist-credentials: false
+
+      - name: 选择开发工具并记录构建信息
+        run: |
+          set -euo pipefail
+          sudo xcode-select -s /Applications/Xcode_16.4.app/Contents/Developer
+          mkdir -p "$GITHUB_WORKSPACE/result"
+          {
+            echo '源码: https://github.com/yyhhzzzzz/Nikon_connect'
+            git -C source rev-parse HEAD
+            echo "构建配置提交: $GITHUB_SHA"
+            echo '兼容目标: iOS 15.4，适用于 iOS 15.4.1'
+            echo '版本: 0.3.3，构建号: 11，不含实时活动扩展'
+            xcodebuild -version
+            xcode-select -p
+          } | tee "$GITHUB_WORKSPACE/result/build-info-ios15-v0.3.3-trollstore.txt"
+
+      - name: 应用 iOS 15 兼容补丁
+        run: |
+          set -euo pipefail
+          git -C source apply "$GITHUB_WORKSPACE/build-config/patches/NikonConnect-ios15-v0.3.3-trollstore.patch"
+          cp "$GITHUB_WORKSPACE/build-config/patches/NikonConnect-ios15-v0.3.3-trollstore.patch" "$GITHUB_WORKSPACE/result/source-ios15-v0.3.3-trollstore.patch"
+          cp "$GITHUB_WORKSPACE/source/Resources/TrollStore.entitlements" "$GITHUB_WORKSPACE/result/NikonConnect-v0.3.3-trollstore-签名权限.plist"
+
+      - name: 安装工程生成工具
+        env:
+          HOMEBREW_NO_AUTO_UPDATE: '1'
+        run: |
+          set -euo pipefail
+          if ! command -v xcodegen >/dev/null 2>&1; then
+            brew install xcodegen
+          fi
+          xcodegen --version | tee -a "$GITHUB_WORKSPACE/result/build-info-ios15-v0.3.3-trollstore.txt"
+
+      - name: 生成兼容版本工程
+        working-directory: source
+        run: |
+          set -euo pipefail
+          xcodegen generate --spec project-trollstore.yml 2>&1 | tee "$GITHUB_WORKSPACE/result/ios15-v0.3.3-trollstore-generate.log"
+
+      - name: 编译 iOS 15 真机应用并关闭签名
+        working-directory: source
+        run: |
+          set -euo pipefail
+          xcodebuild \
+            -project NikonConnectIOS.xcodeproj \
+            -scheme NikonConnectIOS \
+            -configuration Release \
+            -sdk iphoneos \
+            -destination 'generic/platform=iOS' \
+            -derivedDataPath "$RUNNER_TEMP/NikonConnectIOS15DerivedData" \
+            ARCHS=arm64 \
+            ONLY_ACTIVE_ARCH=NO \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY= \
+            DEVELOPMENT_TEAM= \
+            build 2>&1 | tee "$GITHUB_WORKSPACE/result/ios15-v0.3.3-trollstore-build.log"
+
+      - name: 检查兼容信息并打包 IPA
+        run: |
+          set -euo pipefail
+          app="$RUNNER_TEMP/NikonConnectIOS15DerivedData/Build/Products/Release-iphoneos/Nikon Connect.app"
+          test -d "$app"
+          test -f "$app/Assets.car"
+          executable=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$app/Info.plist")
+          minimum_os=$(/usr/libexec/PlistBuddy -c 'Print :MinimumOSVersion' "$app/Info.plist")
+          test "$minimum_os" = '15.4'
+          if /usr/libexec/PlistBuddy -c 'Print :UIUserInterfaceStyle' "$app/Info.plist" >/dev/null 2>&1; then
+            echo '应用仍固定了外观，停止打包。'
+            exit 1
+          fi
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$app/Info.plist")" = '0.3.3'
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$app/Info.plist")" = '11'
+          /usr/bin/lipo "$app/$executable" -verify_arch arm64
+          xcrun vtool -show-build "$app/$executable" >> "$GITHUB_WORKSPACE/result/build-info-ios15-v0.3.3-trollstore.txt"
+          xcrun otool -L "$app/$executable" > "$GITHUB_WORKSPACE/result/ios15-v0.3.3-trollstore-linked-libraries.txt"
+          if /usr/bin/grep -q 'ActivityKit.framework' "$GITHUB_WORKSPACE/result/ios15-v0.3.3-trollstore-linked-libraries.txt"; then
+            echo '兼容包仍链接实时活动框架，停止打包。'
+            exit 1
+          fi
+          if find "$app" -type d -name '*.appex' -print -quit | /usr/bin/grep -q .; then
+            echo '兼容包仍包含应用扩展，停止打包。'
+            exit 1
+          fi
+          # 嵌入巨魔所需的自定义权限，仅本地临时签名，不需要开发者证书。
+          /usr/bin/codesign --force --sign - --entitlements "$GITHUB_WORKSPACE/source/Resources/TrollStore.entitlements" --generate-entitlement-der --timestamp=none "$app"
+          /usr/bin/codesign --verify --strict "$app"
+          /usr/bin/codesign --display --entitlements - --xml "$app" | /usr/bin/plutil -convert xml1 -o - - > "$GITHUB_WORKSPACE/result/NikonConnect-v0.3.3-trollstore-embedded-entitlements.plist"
+          test "$(/usr/libexec/PlistBuddy -c 'Print :com.apple.wifi.manager-access' "$GITHUB_WORKSPACE/result/NikonConnect-v0.3.3-trollstore-embedded-entitlements.plist")" = 'true'
+          test "$(/usr/libexec/PlistBuddy -c 'Print :com.apple.multitasking.systemappassertions' "$GITHUB_WORKSPACE/result/NikonConnect-v0.3.3-trollstore-embedded-entitlements.plist")" = 'true'
+          test "$(/usr/libexec/PlistBuddy -c 'Print :com.apple.multitasking.unlimitedassertions' "$GITHUB_WORKSPACE/result/NikonConnect-v0.3.3-trollstore-embedded-entitlements.plist")" = 'true'
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleDisplayName' "$app/Info.plist")" = 'Nikon Connect 巨魔' 
+          mkdir -p "$RUNNER_TEMP/NikonConnectIOS15IPA/Payload"
+          /usr/bin/ditto "$app" "$RUNNER_TEMP/NikonConnectIOS15IPA/Payload/Nikon Connect.app"
+          cd "$RUNNER_TEMP/NikonConnectIOS15IPA"
+          /usr/bin/ditto -c -k --keepParent Payload "$GITHUB_WORKSPACE/result/NikonConnect-iOS15.4-v0.3.3-trollstore.ipa"
+          cd "$GITHUB_WORKSPACE/result"
+          /usr/bin/shasum -a 256 NikonConnect-iOS15.4-v0.3.3-trollstore.ipa > SHA256SUMS-ios15-v0.3.3-trollstore.txt
+
+      - name: 提供兼容版本下载
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: NikonConnect-iOS15-v0.3.3-trollstore-IPA
+          path: |
+            result/NikonConnect-iOS15.4-v0.3.3-trollstore.ipa
+            result/SHA256SUMS-ios15-v0.3.3-trollstore.txt
+            result/build-info-ios15-v0.3.3-trollstore.txt
+            result/source-ios15-v0.3.3-trollstore.patch
+            result/NikonConnect-v0.3.3-trollstore-签名权限.plist
+            result/NikonConnect-v0.3.3-trollstore-embedded-entitlements.plist
+            result/ios15-v0.3.3-trollstore-linked-libraries.txt
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: 保存兼容构建日志
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: NikonConnect-iOS15-v0.3.3-trollstore-build-logs
+          path: |
+            result/*.log
+            result/build-info-ios15-v0.3.3-trollstore.txt
+            result/ios15-v0.3.3-trollstore-linked-libraries.txt
+          if-no-files-found: warn
+          retention-days: 7
