@@ -2232,10 +2232,10 @@ index 0000000..cb101f9
 +}
 diff --git a/Features/ConnectionSetup/CameraRemoteViewModel.swift b/Features/ConnectionSetup/CameraRemoteViewModel.swift
 new file mode 100644
-index 0000000..f264347
+index 0000000..543f5d2
 --- /dev/null
 +++ b/Features/ConnectionSetup/CameraRemoteViewModel.swift
-@@ -0,0 +1,560 @@
+@@ -0,0 +1,585 @@
 +import Foundation
 +import SwiftUI
 +import UIKit
@@ -2517,7 +2517,7 @@ index 0000000..f264347
 +            }
 +        }
 +    }
-+    var canPrepareWorkflow: Bool { foreground && !isBusy && !isScheduling && !isWatching && !downloads.isDownloading && !gallery.isLoading }
++    var canPrepareWorkflow: Bool { foreground && !isBusy && !isScheduling && !isWatching && !downloads.isDownloading && downloads.queueStatus != .running && !gallery.isLoading }
 +    var presetBrand: String { cameraProfile == .fuji ? "fuji" : cameraProfile == .nikon ? "nikon" : "standard" }
 +    func savePreset(name: String, note: String, recipe: Bool) {
 +        do {
@@ -2634,6 +2634,9 @@ index 0000000..f264347
 +    func startWatching(resuming: Bool = false) {
 +        guard watchTask == nil, !isLive, liveTask == nil, !isBusy, !isScheduling, supports(.watchCapture),
 +              let remote, let session = connection.activeSession else { return }
++        guard !downloads.isDownloading, downloads.queueStatus != .running else {
++            status = "请先暂停下载，再建立边拍边传基线。"; return
++        }
 +        wantsWatch = true; isWatching = true; status = "建立存储卡基线中，已有照片不会自动下载。"
 +        if resuming, watchKnownFingerprints == nil {
 +            do {
@@ -2647,6 +2650,9 @@ index 0000000..f264347
 +            defer { self.isWatching = false; self.watchTask = nil }
 +            do {
 +                guard self.wantsWatch else { return }
++                // 先建立协议监测，再扫描整卡，避免扫描结束与启动监测之间漏掉新照片。
++                _ = try await self.pollCapturedAssets(remote, in:session, resetting:true)
++                guard self.wantsWatch, self.connection.activeSession?.id == session.id else { return }
 +                let snapshot = try await self.gallery.completeLibrarySnapshot(keepGoing: { self.wantsWatch && self.foreground })
 +                guard self.wantsWatch, self.connection.activeSession?.id == session.id else { return }
 +                let keys = Set(snapshot.compactMap(\.libraryFingerprint))
@@ -2665,22 +2671,28 @@ index 0000000..f264347
 +                if self.watchKnownFingerprints == nil {
 +                    self.shell.appendLog("部分文件缺少稳定身份，自动补传已禁用；边拍边传继续运行。")
 +                }
-+                await remote.beginCaptureWatch()
-+                _ = try await remote.newlyCapturedAssets(in: session)
 +                guard self.wantsWatch, self.connection.activeSession?.id == session.id else { return }
 +                self.status = "正在监测新照片，请保持应用在前台。"
 +                while self.wantsWatch {
 +                    try await Task.sleep(nanoseconds: 3_000_000_000)
 +                    guard self.wantsWatch, self.connection.activeSession?.id == session.id else { return }
-+                    if self.downloads.isDownloading || self.gallery.isLoading || self.isLive || self.isBusy { continue }
-+                    let incoming = try await remote.newlyCapturedAssets(in: session)
++                    if self.downloads.isDownloading || self.downloads.queueStatus == .running || self.gallery.isLoading || self.isLive || self.isBusy || self.connection.sessionCoordinator.exclusiveUseReason != nil { continue }
++                    let candidates = try await self.pollCapturedAssets(remote, in:session)
++                    // 整卡扫描已纳入基线的文件无需再次入队。
++                    let incoming = candidates.filter { photo in
++                        guard let known = self.watchKnownFingerprints, let key = photo.libraryFingerprint else { return true }
++                        return !known.contains(key)
++                    }
 +                    guard self.wantsWatch, self.connection.activeSession?.id == session.id else { return }
 +                    if !incoming.isEmpty {
 +                        self.gallery.mergeNewCaptures(incoming)
 +                        let queued = await self.downloads.enqueueDownloads(incoming,
 +                            autoExportToPhotoLibrary: self.connection.autoExportToPhotoLibrary,
 +                            prioritizeJPEGDownloads: self.connection.prioritizeJPEGDownloads)
-+                        if queued { self.watchKnownFingerprints?.formUnion(incoming.compactMap(\.libraryFingerprint)) }
++                        guard queued else { throw CameraAppError.unsupportedOperation("新照片未能全部入队，监测已暂停，补传基线保留。请使用恢复监测重试。") }
++                        if incoming.allSatisfy({ $0.libraryFingerprint != nil }) {
++                            self.watchKnownFingerprints?.formUnion(incoming.compactMap(\.libraryFingerprint))
++                        } else { self.watchKnownFingerprints = nil }
 +                        self.persistRecoveryCheckpoint()
 +                        self.status = "发现 \(incoming.count) 个新文件，已加入队列。"
 +                    }
@@ -2691,6 +2703,14 @@ index 0000000..f264347
 +                }
 +            }
 +        }
++    }
++    private func pollCapturedAssets(_ remote: any CameraRemoteControlling, in session: CameraSession, resetting: Bool = false) async throws -> [PhotoAsset] {
++        guard let lease = connection.sessionCoordinator.acquireCameraUse("新照片检查") else {
++            throw CameraAppError.unsupportedOperation("相机正在执行其他操作，请稍后恢复监测。")
++        }
++        defer { connection.sessionCoordinator.releaseCameraUse(lease) }
++        if resetting { await remote.beginCaptureWatch() }
++        return try await remote.newlyCapturedAssets(in:session)
 +    }
 +    func stopWatching() {
 +        wantsWatch = false
@@ -2741,9 +2761,14 @@ index 0000000..f264347
 +                    guard self.monitorID == id, self.foreground,
 +                          let session = self.connection.activeSession,
 +                          let transport = self.connection.sessionCoordinator.activeTransport as? any CameraConnectionChecking else { return }
-+                    if self.downloads.isDownloading || self.gallery.isLoading || self.isBusy || self.isLive || self.isWatching { continue }
-+                    do { try await transport.checkConnection() }
++                    if self.downloads.isDownloading || self.downloads.queueStatus == .running || self.gallery.isLoading || self.isBusy || self.isLive || self.isWatching || self.isScheduling { continue }
++                    guard let lease = self.connection.sessionCoordinator.acquireCameraUse("连接检查") else { continue }
++                    do {
++                        try await transport.checkConnection()
++                        self.connection.sessionCoordinator.releaseCameraUse(lease)
++                    }
 +                    catch {
++                        self.connection.sessionCoordinator.releaseCameraUse(lease)
 +                        guard self.connection.activeSession?.id == session.id, self.monitorID == id, self.foreground else { return }
 +                        if let error = error as? PTPIPError, case .unexpectedResponse(let code) = error, [0x2005, 0x200a, 0x2019].contains(code) { continue }
 +                        await self.recoverConnection(previousIdentity: session.persistentIdentity, monitor: id)
@@ -2798,7 +2823,7 @@ index 0000000..f264347
 +}
 diff --git a/Features/ConnectionSetup/CameraWiFiSetupView.swift b/Features/ConnectionSetup/CameraWiFiSetupView.swift
 new file mode 100644
-index 0000000..999b041
+index 0000000..656986a
 --- /dev/null
 +++ b/Features/ConnectionSetup/CameraWiFiSetupView.swift
 @@ -0,0 +1,56 @@
@@ -2833,7 +2858,7 @@ index 0000000..999b041
 +                            Spacer()
 +                            if wifi.profile(for: mode)?.id == profile.id { Image(systemName: "checkmark").foregroundColor(AppTheme.accentStrong) }
 +                            Button("删除", role: .destructive) { wifi.remove(profile) }
-+                        }
++                        }.buttonStyle(.borderless)
 +                    }
 +                }
 +                Section(header: Text("添加网络")) {
