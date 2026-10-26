@@ -717,10 +717,10 @@ index 0000000..97cfe3b
 +}
 diff --git a/Domain/CameraExtendedParameterLabels.swift b/Domain/CameraExtendedParameterLabels.swift
 new file mode 100644
-index 0000000..21933fb
+index 0000000..c1f0848
 --- /dev/null
 +++ b/Domain/CameraExtendedParameterLabels.swift
-@@ -0,0 +1,103 @@
+@@ -0,0 +1,107 @@
 +import Foundation
 +
 +// 不将自定义槽编码、其他机型的索引或未经确认的名称套用到当前参数。
@@ -728,6 +728,10 @@ index 0000000..21933fb
 +    static func title(code: UInt16, value: Int64, profile: CameraParameterDecoder.Profile, model: String) -> String? {
 +        let unknown = String(format: "未识别（相机值 0x%X）", UInt32(truncatingIfNeeded: value))
 +        if code == 0x500e {
++            if profile == .nikon, CameraSettingCatalog.isNikonZ(model),
++               let title = [Int64(0x8010): "AUTO · 自动", 0x8050: "U1 · 用户设定", 0x8051: "U2 · 用户设定", 0x8052: "U3 · 用户设定"][value] {
++                return title
++            }
 +            return [1: "M · 手动曝光", 2: "P · 程序自动", 3: "A · 光圈优先", 4: "S · 快门优先"][value] ?? unknown
 +        }
 +        if profile == .fuji {
@@ -5194,10 +5198,10 @@ index 0000000..df0ac59
 +    func consumeDiagnostics() async -> [String] { let result = diagnostics; diagnostics = []; return result }
 +}
 diff --git a/Services/ExperimentalNikonTransport.swift b/Services/ExperimentalNikonTransport.swift
-index 838a986..a52f1a4 100644
+index 838a986..f121c0c 100644
 --- a/Services/ExperimentalNikonTransport.swift
 +++ b/Services/ExperimentalNikonTransport.swift
-@@ -1,10 +1,13 @@
+@@ -1,10 +1,16 @@
  import Foundation
  
 -actor ExperimentalNikonTransport: CameraTransport {
@@ -5205,6 +5209,9 @@ index 838a986..a52f1a4 100644
 +actor ExperimentalNikonTransport: CameraRemoteControlling, CameraConnectionChecking {
 +    var session: PTPIPSession?
 +    var remoteUnsupportedProperties: Set<UInt16> = []
++    var remoteAdvertisedProperties: Set<UInt16> = []
++    var remotePropertyDiscoveryCompleted = false
++    var remoteVendorPropertiesAdvertised = false
 +    var focusCoordinateSize: (width: UInt16, height: UInt16)?
      private var pendingDiagnostics: [String] = []
  
@@ -5213,7 +5220,7 @@ index 838a986..a52f1a4 100644
          let host = config.normalizedHost
          guard !host.isEmpty else {
              throw CameraAppError.missingHost
-@@ -20,17 +23,39 @@ actor ExperimentalNikonTransport: CameraTransport {
+@@ -20,17 +26,41 @@ actor ExperimentalNikonTransport: CameraTransport {
  
          let ptpSession = PTPIPSession(host: host, port: UInt16(config.port))
          do {
@@ -5232,6 +5239,8 @@ index 838a986..a52f1a4 100644
              session = ptpSession
 -
 +            remoteUnsupportedProperties = []; focusCoordinateSize = nil
++            remoteAdvertisedProperties = []; remotePropertyDiscoveryCompleted = false
++            remoteVendorPropertiesAdvertised = false
 +
 +            let responderID = await ptpSession.responderGUID?.map { String(format: "%02x", $0) }.joined()
 +            let cameraID = deviceInfo.serialNumber ?? responderID ?? UUID().uuidString
@@ -5257,7 +5266,7 @@ index 838a986..a52f1a4 100644
              await ptpSession.close()
              throw mapError(error)
          }
-@@ -46,10 +71,8 @@ actor ExperimentalNikonTransport: CameraTransport {
+@@ -46,10 +76,8 @@ actor ExperimentalNikonTransport: CameraTransport {
          }
  
          do {
@@ -5270,7 +5279,7 @@ index 838a986..a52f1a4 100644
          } catch {
              throw mapError(error)
          }
-@@ -92,6 +115,12 @@ actor ExperimentalNikonTransport: CameraTransport {
+@@ -92,6 +120,12 @@ actor ExperimentalNikonTransport: CameraTransport {
          }
  
          do {
@@ -5283,7 +5292,7 @@ index 838a986..a52f1a4 100644
              let expectedSize = max(asset.byteSize, 0)
              if let onProgress {
                  await onProgress(
-@@ -146,11 +175,16 @@ actor ExperimentalNikonTransport: CameraTransport {
+@@ -146,11 +180,16 @@ actor ExperimentalNikonTransport: CameraTransport {
  
      func disconnect() async {
          if let session {
@@ -5301,7 +5310,7 @@ index 838a986..a52f1a4 100644
      func consumeDiagnostics() async -> [String] {
          var messages = pendingDiagnostics
          pendingDiagnostics.removeAll()
-@@ -164,6 +198,8 @@ actor ExperimentalNikonTransport: CameraTransport {
+@@ -164,6 +203,8 @@ actor ExperimentalNikonTransport: CameraTransport {
  
      private func mapError(_ error: Error) -> Error {
          switch error {
@@ -5754,10 +5763,10 @@ index 0000000..227facc
 +    }
 +}
 diff --git a/Services/PTPIPPrimitives.swift b/Services/PTPIPPrimitives.swift
-index a75e984..9579166 100644
+index a75e984..579ba7a 100644
 --- a/Services/PTPIPPrimitives.swift
 +++ b/Services/PTPIPPrimitives.swift
-@@ -36,6 +36,22 @@ enum PTPOperationCode: UInt16, Sendable {
+@@ -36,6 +36,24 @@ enum PTPOperationCode: UInt16, Sendable {
      case getThumb = 0x100A
      case getPartialObject = 0x101B
      case getObjectsMetaData = 0x9434
@@ -5772,6 +5781,8 @@ index a75e984..9579166 100644
 +    case nikonCaptureToCard = 0x9207
 +    case nikonAutofocus = 0x90c1
 +    case nikonChangeFocusArea = 0x9205
++    case nikonGetVendorPropCodes = 0x90ca
++    case nikonGetVendorCodes = 0x9439
 +    case sonyTransferMode = 0x9212
 +    case sonyContentsDates = 0x923B
 +    case sonyContentsList = 0x923C
@@ -5780,7 +5791,7 @@ index a75e984..9579166 100644
  }
  
  enum PTPResponseCode: UInt16, Sendable {
-@@ -77,6 +93,8 @@ struct PTPIPDeviceInfo: Sendable {
+@@ -77,6 +95,8 @@ struct PTPIPDeviceInfo: Sendable {
      let model: String?
      let manufacturer: String?
      let operationsSupported: Set<UInt16>
@@ -5789,7 +5800,7 @@ index a75e984..9579166 100644
  
      func supportsOperation(_ operation: PTPOperationCode) -> Bool {
          operationsSupported.contains(operation.rawValue)
-@@ -86,6 +104,7 @@ struct PTPIPDeviceInfo: Sendable {
+@@ -86,6 +106,7 @@ struct PTPIPDeviceInfo: Sendable {
  struct PTPIPObjectInfo: Sendable {
      let handle: UInt32
      let storageID: UInt32
@@ -5995,10 +6006,10 @@ index 8524ba9..0db731a 100644
  
 diff --git a/Services/PTPIPSession+RemoteControl.swift b/Services/PTPIPSession+RemoteControl.swift
 new file mode 100644
-index 0000000..5db2f4e
+index 0000000..2e65ab5
 --- /dev/null
 +++ b/Services/PTPIPSession+RemoteControl.swift
-@@ -0,0 +1,177 @@
+@@ -0,0 +1,216 @@
 +import Foundation
 +
 +extension PTPIPSession {
@@ -6109,15 +6120,54 @@ index 0000000..5db2f4e
 +    func cameraParameters(only codes: Set<UInt16>) async throws -> [CameraParameter] {
 +        try await loadCameraParameters(only: codes)
 +    }
++    private func discoverRemoteProperties(session: PTPIPSession, info: PTPIPDeviceInfo?) async throws {
++        guard !remotePropertyDiscoveryCompleted else { return }
++        var discovered = info?.propertiesSupported ?? []
++        var receivedVendorList = false
++        // 标准 DeviceInfo 经常不含尼康厂商属性。只调用机身明确宣告的扩展操作。
++        for operation in [PTPOperationCode.nikonGetVendorPropCodes, .nikonGetVendorCodes] {
++            guard info?.supportsOperation(operation) == true else { continue }
++            do {
++                let extended = operation == .nikonGetVendorCodes
++                let data = try await session.remoteData(operation, parameters: extended ? [0x0d] : [])
++                var reader = PTPDataReader(data: data)
++                let count = try reader.readUInt32()
++                let width = extended ? 4 : 2
++                guard UInt64(count) <= UInt64(reader.remainingCount / width) else {
++                    throw PTPIPError.malformedPayload("尼康扩展参数列表长度无效。")
++                }
++                for _ in 0..<Int(count) {
++                    let code: UInt32
++                    if extended { code = try reader.readUInt32() }
++                    else { code = UInt32(try reader.readUInt16()) }
++                    // 32 位属性需要另一套描述协议，不能截断为 16 位后写入同号属性。
++                    if code <= UInt32(UInt16.max) { discovered.insert(UInt16(code)) }
++                }
++                receivedVendorList = true
++            } catch let error as PTPIPError {
++                if case .unexpectedResponse(let code) = error, code == 0x2005 { continue }
++                throw error
++            }
++        }
++        remoteAdvertisedProperties = discovered
++        remoteVendorPropertiesAdvertised = receivedVendorList
++        remotePropertyDiscoveryCompleted = true
++    }
 +    private func loadCameraParameters(only codes: Set<UInt16>?) async throws -> [CameraParameter] {
 +        guard let session else { throw CameraAppError.notConnected }
 +        let info = await session.deviceInfo
++        try await discoverRemoteProperties(session: session, info: info)
 +        let model = info?.model ?? ""
 +        var result: [CameraParameter] = []
 +        for (code, title) in CameraParameterDecoder.definitions(profile: .nikon) {
 +            if let codes, !codes.contains(code) { continue }
 +            if remoteUnsupportedProperties.contains(code) { continue }
-+            if let supported = info?.propertiesSupported, !supported.contains(code) { continue }
++            if !remoteAdvertisedProperties.contains(code) {
++                // 未开放扩展发现的机身只有限探测本应用目录内的厂商属性，并缓存明确的不支持响应。
++                if code >= 0xd000 {
++                    if remoteVendorPropertiesAdvertised { continue }
++                } else if info?.propertiesSupported != nil { continue }
++            }
 +            do {
 +                let data = try await session.remoteData(.getDevicePropDesc, parameters: [UInt32(code)])
 +                do { result.append(try CameraParameterDecoder.decode(data, code: code, title: title, profile: .nikon, model: model)) }
